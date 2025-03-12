@@ -35,6 +35,7 @@ class SpikeDrivenTransformer(nn.Module):
         pooling_stat="1111",
         spike_mode="lif",
         use_moe=False,
+        use_moe_mlp=False,
         n_routed_experts=4,
         n_shared_experts=None,
         num_experts_per_tok=2,
@@ -44,8 +45,12 @@ class SpikeDrivenTransformer(nn.Module):
         cml=False,
         pretrained=False,
         pretrained_cfg=None,
+        use_expert_residual=False,
     ):
         super().__init__()
+        self.use_moe_sps = use_moe
+        self.use_moe_mlp = use_moe_mlp
+        
         self.num_classes = num_classes
         self.depths = depths
 
@@ -69,6 +74,7 @@ class SpikeDrivenTransformer(nn.Module):
             n_routed_experts=n_routed_experts,
             n_shared_experts=n_shared_experts,
             num_experts_per_tok=num_experts_per_tok,
+            T=T,
         )
 
         blocks = nn.ModuleList(
@@ -88,6 +94,11 @@ class SpikeDrivenTransformer(nn.Module):
                     spike_mode=spike_mode,
                     dvs=dvs_mode,
                     layer=j,
+                    use_moe_mlp=use_moe_mlp,
+                    n_routed_experts=n_routed_experts,
+                    n_shared_experts=n_shared_experts,
+                    num_experts_per_tok=num_experts_per_tok,
+                    use_expert_residual=use_expert_residual,
                 )
                 for j in range(depths)
             ]
@@ -129,57 +140,77 @@ class SpikeDrivenTransformer(nn.Module):
         return x, hook
 
     def forward(self, x, hook=None):
-        # 仅在第一次调用时打印
-        if not hasattr(SpikeDrivenTransformer, '_print_count'):
-            SpikeDrivenTransformer._print_count = 0
-
-        if SpikeDrivenTransformer._print_count == 0:
-            print("\nSpikeformer Debug Info:")
-            print("1. Input shape:", x.shape)
-        
-            # 确保输入是5维的 [B, T, C, H, W]
-            if len(x.shape) == 4:  # [B, C, H, W]
-                B = x.shape[0]
-                x = x.unsqueeze(1)  # [B, 1, C, H, W]
-                x = x.repeat(1, self.T, 1, 1, 1)  # [B, T, C, H, W]
-                print("2. After time dimension:", x.shape)
-            SpikeDrivenTransformer._print_count += 1
+        # 完全恢复原始输入处理逻辑
+        if not self.use_moe_sps and not self.use_moe_mlp:
+            # 原始代码路径
+            if len(x.shape) < 5:
+                x = (x.unsqueeze(0)).repeat(self.T, 1, 1, 1, 1)
+            else:
+                x = x.transpose(0, 1).contiguous()
+                
+            x, hook = self.forward_features(x, hook=hook)
+            x = self.head_lif(x)
+            if hook is not None:
+                hook["head_lif"] = x.detach()
+            
+            x = self.head(x)
+            if not self.TET:
+                x = x.mean(0)  # 恢复原始维度的平均操作
+                
+            return x, hook
         else:
-            # 非首次调用时的维度处理
-            if len(x.shape) == 4:
-                B = x.shape[0]
-                x = x.unsqueeze(1)
-                x = x.repeat(1, self.T, 1, 1, 1)
-        
-        x, hook = self.forward_features(x, hook=hook)
-        if SpikeDrivenTransformer._print_count == 0:
-            print("3. After forward_features:", x.shape)
-        
-        x = self.head_lif(x)
-        if SpikeDrivenTransformer._print_count == 0:
-            print("4. After head_lif:", x.shape)
-        
-        if hook is not None:
-            hook["head_lif"] = x.detach()
+            # MoE代码路径 - 保留现有逻辑
+            # 仅在第一次调用时打印
+            if not hasattr(SpikeDrivenTransformer, '_print_count'):
+                SpikeDrivenTransformer._print_count = 0
 
-        x = self.head(x)
-        if SpikeDrivenTransformer._print_count == 0:
-            print("5. After head:", x.shape)
-        
-        if not self.TET:
-            x = x.mean(1)  # [B, features]
             if SpikeDrivenTransformer._print_count == 0:
-                print("6. After mean:", x.shape)
+                print("\nSpikeformer Debug Info:")
+                print("1. Input shape:", x.shape)
+            
+                # 确保输入是5维的 [B, T, C, H, W]
+                if len(x.shape) == 4:  # [B, C, H, W]
+                    B = x.shape[0]
+                    x = x.unsqueeze(1)  # [B, 1, C, H, W]
+                    x = x.repeat(1, self.T, 1, 1, 1)  # [B, T, C, H, W]
+                    print("2. After time dimension:", x.shape)
                 SpikeDrivenTransformer._print_count += 1
-        
-        aux_info = hook if hook is not None else {}
+            else:
+                # 非首次调用时的维度处理
+                if len(x.shape) == 4:
+                    B = x.shape[0]
+                    x = x.unsqueeze(1)
+                    x = x.repeat(1, self.T, 1, 1, 1)
+            
+            x, hook = self.forward_features(x, hook=hook)
+            if SpikeDrivenTransformer._print_count == 0:
+                print("3. After forward_features:", x.shape)
+            
+            x = self.head_lif(x)
+            if SpikeDrivenTransformer._print_count == 0:
+                print("4. After head_lif:", x.shape)
+            
+            if hook is not None:
+                hook["head_lif"] = x.detach()
 
-        # MoE 层处理
-        if hasattr(self, 'moe') and self.moe is not None:
-            if hasattr(self.moe, 'aux_loss') and self.moe.aux_loss is not None:
-                aux_info['moe_aux_loss'] = self.moe.aux_loss
-        
-        return x, aux_info
+            x = self.head(x)
+            if SpikeDrivenTransformer._print_count == 0:
+                print("5. After head:", x.shape)
+            
+            if not self.TET:
+                x = x.mean(1)  # MoE模式下使用这个维度
+                if SpikeDrivenTransformer._print_count == 0:
+                    print("6. After mean:", x.shape)
+                    SpikeDrivenTransformer._print_count += 1
+            
+            aux_info = hook if hook is not None else {}
+
+            # MoE 层处理
+            if hasattr(self, 'moe') and self.moe is not None:
+                if hasattr(self.moe, 'aux_loss') and self.moe.aux_loss is not None:
+                    aux_info['moe_aux_loss'] = self.moe.aux_loss
+            
+            return x, aux_info
 
 
 @register_model
@@ -194,16 +225,18 @@ def sdt(
     pooling_stat="1111",
     spike_mode="lif",
     use_moe=False,
+    use_moe_mlp=False,
     n_routed_experts=4,
     n_shared_experts=None,
     num_experts_per_tok=2,
+    use_expert_residual=False,
     **kwargs,
 ):
     print(f"\nModel Debug - Init:")
-    print(f"use_moe: {use_moe}")
-    print(f"n_routed_experts: {n_routed_experts}")
-    print(f"num_experts_per_tok: {num_experts_per_tok}")
+    print(f"use_moe (SPS): {use_moe}")
+    print(f"use_moe_mlp (MLP): {use_moe_mlp}")
     
+    # 无论是否使用MoE，都使用相同的参数集
     model_kwargs = dict(
         patch_size=4,
         embed_dims=256,
@@ -215,15 +248,18 @@ def sdt(
         T=T,
         pooling_stat=pooling_stat,
         spike_mode=spike_mode,
-        use_moe=use_moe,
+        use_moe=use_moe,  # 始终传递
+        use_moe_mlp=use_moe_mlp,  # 始终传递
         n_routed_experts=n_routed_experts,
         n_shared_experts=n_shared_experts,
         num_experts_per_tok=num_experts_per_tok,
+        use_expert_residual=use_expert_residual,
     )
     
     # 更新配置，允许通过kwargs覆盖默认值
     model_kwargs.update(kwargs)
     
+    # 创建模型，现在应该能够正确处理MoE或非MoE模式
     model = SpikeDrivenTransformer(**model_kwargs)
     model.default_cfg = _cfg()
     return model

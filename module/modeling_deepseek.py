@@ -50,6 +50,11 @@ from transformers.utils import (
 from transformers.utils.import_utils import is_torch_fx_available
 from .configuration_deepseek import DeepseekConfig
 
+from spikingjelly.clock_driven.neuron import (
+    MultiStepLIFNode,
+    MultiStepParametricLIFNode,
+)
+
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -260,111 +265,56 @@ class DeepseekMLP(nn.Module):
         return x
 
 
-class DeepseekMoE(nn.Module):
-    def __init__(self, config):
+# 完整的MS_MLP_Conv专家
+class SpikingExpert(nn.Module):
+    def __init__(self, hidden_size, ffn_dim, spike_mode="lif", use_residual=False):
         super().__init__()
-        self.config = config
-        print(f"\nMoE Debug - Init:")
-        print(f"n_routed_experts: {config.n_routed_experts}")
-        print(f"num_experts_per_tok: {config.num_experts_per_tok}")
-        print(f"aux_loss_alpha: {config.aux_loss_alpha}")
+        # 使用传入的参数而不是维度比较
+        self.res = use_residual
         
-        # 初始化门控网络
-        self.gate = nn.Linear(config.hidden_size, config.n_routed_experts, bias=False)
-        
-        # 初始化专家网络
-        self.experts = nn.ModuleList([
-            DeepseekMLP(config) for _ in range(config.n_routed_experts)
-        ])
-        
-        # 共享专家（如果有的话）
-        if config.n_shared_experts:
-            self.shared_experts = nn.ModuleList([
-                DeepseekMLP(config) for _ in range(config.n_shared_experts)
-            ])
-        else:
-            self.shared_experts = None
+        # 第一层
+        if spike_mode == "lif":
+            self.fc1_lif = MultiStepLIFNode(tau=2.0, detach_reset=True, backend="cupy")
+        elif spike_mode == "plif":
+            self.fc1_lif = MultiStepParametricLIFNode(init_tau=2.0, detach_reset=True, backend="cupy")
             
-        self.num_experts = config.n_routed_experts
-        self.top_k = config.num_experts_per_tok
-        self.aux_loss_alpha = getattr(config, 'aux_loss_alpha', 0.1)
-        self.aux_loss = None
-        self._print_once = True
+        self.fc1_conv = nn.Conv2d(hidden_size, ffn_dim, kernel_size=1, stride=1)
+        self.fc1_bn = nn.BatchNorm2d(ffn_dim)
         
-        # 添加专家使用计数器
-        self.register_buffer('_expert_counts', torch.zeros(config.n_routed_experts))
-
-    def forward(self, hidden_states):
-        if self._print_once:
-            print(f"\nMoE Debug - Forward:")
-            print(f"Input shape: {hidden_states.shape}")
-        
-        batch_size, *rest_shape = hidden_states.shape
-        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])  # [B*T*H*W, C]
-        
-        # 计算门控分数
-        gate_logits = self.gate(hidden_states)  # [B*T*H*W, num_experts]
-        gate_probs = F.softmax(gate_logits, dim=-1)
-        
-        if self._print_once:
-            print(f"Gate probs shape: {gate_probs.shape}")
-            print(f"Gate probs mean: {gate_probs.mean(0)}")
-        
-        # 选择top-k专家
-        top_k_probs, top_k_indices = torch.topk(gate_probs, k=self.top_k, dim=-1)  # [B*T*H*W, top_k]
-        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)  # 重新归一化
-        
-        if self._print_once:
-            print(f"Top-k indices shape: {top_k_indices.shape}")
-            expert_distribution = torch.bincount(top_k_indices.flatten()) / len(top_k_indices.flatten())
-            print(f"Expert selection distribution: {expert_distribution}")
-        
-        # 计算专家输出
-        combined_output = torch.zeros_like(hidden_states)
-        
-        # 重置计数器
-        if self.training:
-            self._expert_counts.zero_()
-        
-        for k in range(self.top_k):
-            expert_index = top_k_indices[:, k]  # [B*T*H*W]
-            expert_prob = top_k_probs[:, k].unsqueeze(-1)  # [B*T*H*W, 1]
+        # 第二层
+        if spike_mode == "lif":
+            self.fc2_lif = MultiStepLIFNode(tau=2.0, detach_reset=True, backend="cupy")
+        elif spike_mode == "plif":
+            self.fc2_lif = MultiStepParametricLIFNode(init_tau=2.0, detach_reset=True, backend="cupy")
             
-            # 更新专家使用计数
-            if self.training:
-                for i in range(self.num_experts):
-                    self._expert_counts[i] += (expert_index == i).float().sum().item()
-            
-            # 为每个专家分别计算
-            for i in range(self.num_experts):
-                mask = (expert_index == i)
-                if mask.any():
-                    expert_output = self.experts[i](hidden_states[mask])
-                    combined_output[mask] += expert_prob[mask] * expert_output
+        self.fc2_conv = nn.Conv2d(ffn_dim, hidden_size, kernel_size=1, stride=1)
+        self.fc2_bn = nn.BatchNorm2d(hidden_size)
         
-        # 计算辅助损失
-        if self.training:
-            # 计算实际和理想的专家使用分布
-            expert_usage = self._expert_counts / self._expert_counts.sum()
-            ideal_usage = torch.ones_like(expert_usage) / self.num_experts
-            
-            # 计算辅助损失：负载均衡损失 + 重要性损失
-            balance_loss = F.mse_loss(expert_usage, ideal_usage)
-            importance_loss = -torch.mean(torch.sum(gate_probs * torch.log(gate_probs + 1e-10), dim=-1))
-            
-            self.aux_loss = (balance_loss + importance_loss) * self.aux_loss_alpha
-            
-            # 仅在第一次迭代时打印调试信息
-            if self._print_once:
-                print(f"Expert usage: {expert_usage}")
-                print(f"Balance loss: {balance_loss.item():.4f}")
-                print(f"Importance loss: {importance_loss.item():.4f}")
-                print(f"Final aux loss: {self.aux_loss.item():.4f}")
-                self._print_once = False
+        self.c_hidden = ffn_dim
         
-        # 重塑输出到原始维度
-        output = combined_output.reshape(batch_size, *rest_shape)
-        return output  # 只返回输出张量，不返回元组
+    def forward(self, x):
+        # x形状: [T, B, C, H, W]
+        T, B, C, H, W = x.shape
+        identity = x
+        
+        # 第一层 - 完全照搬MS_MLP_Conv的实现
+        x = self.fc1_lif(x)
+        x = self.fc1_conv(x.flatten(0, 1))
+        x = self.fc1_bn(x).reshape(T, B, self.c_hidden, H, W).contiguous()
+        
+        # 可选的残差连接
+        if self.res:
+            x = identity + x
+            identity = x
+            
+        # 第二层
+        x = self.fc2_lif(x)
+        x = self.fc2_conv(x.flatten(0, 1))
+        x = self.fc2_bn(x).reshape(T, B, C, H, W).contiguous()
+        
+        # 最终残差连接
+        x = x + identity
+        return x
 
 
 # Copied from transformers.models.llama.modeling_llama.repeat_kv
@@ -858,7 +808,7 @@ class DeepseekDecoderLayer(nn.Module):
 
         self.self_attn = Deepseek_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
 
-        self.mlp = DeepseekMoE(config) if (config.n_routed_experts is not None and  \
+        self.mlp = DeepseekMoESparseMLP(config) if (config.n_routed_experts is not None and  \
                                            layer_idx >= config.first_k_dense_replace and layer_idx % config.moe_layer_freq == 0) \
                                         else DeepseekMLP(config)
         self.input_layernorm = DeepseekRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1512,3 +1462,144 @@ class DeepseekForSequenceClassification(DeepseekPreTrainedModel):
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
         )
+
+
+# 添加带有SpikingExpert专家的MoE实现
+class DeepseekMoESparseMLP(nn.Module):
+    """MoE layer with sparse routing using complete MS_MLP_Conv experts"""
+    
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.ffn_dim = config.moe_intermediate_size
+        self.n_routed_experts = config.n_routed_experts
+        self.top_k = config.num_experts_per_tok
+        
+        # 路由器组件
+        self.router = nn.Linear(self.hidden_size, self.n_routed_experts, bias=False)
+        
+        # 创建完整的MS_MLP_Conv专家
+        self.experts = nn.ModuleList([
+            SpikingExpert(
+                hidden_size=self.hidden_size,
+                ffn_dim=self.ffn_dim,
+                spike_mode=config.spike_mode if hasattr(config, 'spike_mode') else "lif",
+                use_residual=config.use_expert_residual if hasattr(config, 'use_expert_residual') else False
+            ) for _ in range(self.n_routed_experts)
+        ])
+        
+        # 初始化
+        with torch.no_grad():
+            nn.init.zeros_(self.router.weight)
+        
+        # 专家使用计数器
+        self.register_buffer('_expert_counts', torch.zeros(self.n_routed_experts))
+        self.aux_loss = None
+        self.aux_loss_alpha = config.aux_loss_alpha
+        
+        print(f"\nMoE Debug - Init:")
+        print(f"n_routed_experts: {config.n_routed_experts}")
+        print(f"num_experts_per_tok: {config.num_experts_per_tok}")
+        print(f"aux_loss_alpha: {config.aux_loss_alpha}")
+    
+    def forward(self, hidden_states):
+        # hidden_states形状: [T, B, C, H, W]
+        T, B, C, H, W = hidden_states.shape
+        
+        print(f"\nMoE Debug - Forward:")
+        print(f"Input shape: {hidden_states.shape}")
+        
+        # 创建输出变量
+        combined_output = torch.zeros_like(hidden_states)
+        
+        # 我们需要将5D张量展平为2D来进行路由决策
+        # 对于每个批次和时间步，提取特征的平均表示用于路由
+        flat_states = hidden_states.reshape(T*B, C, H, W)
+        pooled_features = F.adaptive_avg_pool2d(flat_states, 1).squeeze(-1).squeeze(-1)  # [T*B, C]
+        
+        # 计算路由决策
+        router_logits = self.router(pooled_features)  # [T*B, n_experts]
+        routing_weights = F.softmax(router_logits, dim=-1)
+        
+        print(f"Gate probs shape: {routing_weights.shape}")
+        print(f"Gate probs mean: {routing_weights.mean(0)}")
+        
+        # 选择top-k专家
+        top_k_weights, top_k_indices = torch.topk(routing_weights, k=self.top_k, dim=-1)
+        top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)  # 重新归一化
+        
+        print(f"Top-k indices shape: {top_k_indices.shape}")
+        expert_distribution = torch.zeros(self.n_routed_experts, device=top_k_indices.device)
+        for i in range(self.n_routed_experts):
+            expert_distribution[i] = (top_k_indices == i).float().sum() / (top_k_indices.size(0) * top_k_indices.size(1))
+        print(f"Expert selection distribution: {expert_distribution}")
+        
+        # 重置专家使用计数
+        if self.training:
+            self._expert_counts.zero_()
+        
+        # 处理每个批次元素
+        for tb_idx in range(T*B):
+            t_idx = tb_idx // B
+            b_idx = tb_idx % B
+            
+            # 获取这个元素的top-k专家和权重
+            element_experts = top_k_indices[tb_idx]
+            element_weights = top_k_weights[tb_idx]
+            
+            # 处理每个选定的专家
+            for k, (expert_idx, weight) in enumerate(zip(element_experts, element_weights)):
+                # 增加专家使用计数
+                if self.training:
+                    self._expert_counts[expert_idx] += 1
+                
+                # 用专家处理整个输入
+                expert_output = self.experts[expert_idx](hidden_states)
+                
+                # 只保留当前时间步和批次的输出，并加权
+                combined_output[t_idx, b_idx] += weight * expert_output[t_idx, b_idx]
+        
+        # 计算辅助损失
+        if self.training:
+            # 计算负载平衡损失
+            expert_usage = self._expert_counts / self._expert_counts.sum()
+            ideal_usage = torch.ones_like(expert_usage) / self.n_routed_experts
+            balance_loss = F.mse_loss(expert_usage, ideal_usage)
+            
+            # 计算重要性损失
+            importance_loss = -torch.mean(torch.sum(routing_weights * torch.log(routing_weights + 1e-10), dim=-1))
+            
+            self.aux_loss = (balance_loss + importance_loss) * self.aux_loss_alpha
+            
+            print(f"Expert usage: {expert_usage}")
+            print(f"Balance loss: {balance_loss.item():.4f}")
+            print(f"Importance loss: {importance_loss.item():.4f}")
+            print(f"Final aux loss: {self.aux_loss.item():.4f}")
+        
+        # 在计算aux_loss后添加
+        if self.training and hasattr(self, 'aux_loss'):
+            # 计算专家使用率
+            expert_usage = self._expert_counts / self._expert_counts.sum()
+            
+            # 如果wandb可用则记录
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb_data = {
+                        f"moe/expert_{i}_usage": usage.item() 
+                        for i, usage in enumerate(expert_usage)
+                    }
+                    wandb_data.update({
+                        "moe/balance_loss": balance_loss.item(),
+                        "moe/importance_loss": importance_loss.item(),
+                        "moe/aux_loss": self.aux_loss.item(),
+                    })
+                    wandb.log(wandb_data)
+            except ImportError:
+                pass
+        
+        return combined_output
+
+# 添加别名使DeepseekMoE指向DeepseekMoESparseMLP
+DeepseekMoE = DeepseekMoESparseMLP

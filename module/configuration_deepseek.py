@@ -90,6 +90,10 @@ class DeepseekConfig(PretrainedConfig):
             Whether to use a bias in the query, key, value and output projection layers during self-attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
+        spike_mode (`str`, *optional*, defaults to "lif"):
+            The mode of the spike activation function.
+        use_expert_residual (`bool`, *optional*, defaults to `False`):
+            Whether to use residual connections in the MoE experts.
 
     ```python
     >>> from transformers import DeepseekModel, DeepseekConfig
@@ -136,6 +140,8 @@ class DeepseekConfig(PretrainedConfig):
         rope_scaling=None,
         attention_bias=False,
         attention_dropout=0.0,
+        spike_mode="lif",
+        use_expert_residual=False,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -169,6 +175,8 @@ class DeepseekConfig(PretrainedConfig):
         self._rope_scaling_validation()
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.spike_mode = spike_mode
+        self.use_expert_residual = use_expert_residual
 
         super().__init__(
             pad_token_id=pad_token_id,
