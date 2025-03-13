@@ -44,14 +44,6 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
 import model, dvs_utils, criterion
-from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-import io
-import torchvision
-from PIL import Image
-import torch.nn.functional as F
-import wandb
 
 try:
     from apex import amp
@@ -381,9 +373,9 @@ parser.add_argument(
 parser.add_argument(
     "--clip-grad",
     type=float,
-    default=1.0,
+    default=None,
     metavar="NORM",
-    help="Clip gradient norm (default: 1.0, norm mode)",
+    help="Clip gradient norm (default: None, no clipping)",
 )
 parser.add_argument(
     "--clip-mode",
@@ -401,7 +393,7 @@ parser.add_argument(
     help='LR scheduler (default: "step"',
 )
 parser.add_argument(
-    "--lr", type=float, default=1e-3, metavar="LR", help="learning rate (default: 1e-3)"
+    "--lr", type=float, default=0.01, metavar="LR", help="learning rate (default: 0.01)"
 )
 parser.add_argument(
     "--lr-noise",
@@ -869,34 +861,6 @@ parser.add_argument(
     default=False,
     help="log training and validation metrics to wandb",
 )
-parser.add_argument('--use-moe', action='store_true', default=False,
-                  help='Use Mixture of Experts in the last layer')
-parser.add_argument('--n-routed-experts', type=int, default=4,
-                  help='Number of routed experts in MoE')
-parser.add_argument('--n-shared-experts', type=int, default=None,
-                  help='Number of shared experts in MoE')
-parser.add_argument('--num-experts-per-tok', type=int, default=2,
-                  help='Number of experts to select for each token')
-parser.add_argument(
-    '--tensorboard',
-    action='store_true',
-    default=True,
-    help='Enable TensorBoard logging'
-)
-parser.add_argument('--use-moe-mlp', action='store_true',
-                    help='Use Mixture of Experts in MLP blocks')
-parser.add_argument('--use-expert-residual', action='store_true', default=False,
-                    help='使用MoE专家内部的残差连接')
-parser.add_argument('--use-wandb', action='store_true', default=False,
-                   help='使用Weights & Biases进行实验追踪')
-parser.add_argument('--wandb-project', type=str, default='sdt-snn',
-                   help='wandb项目名称')
-parser.add_argument('--wandb-entity', type=str, default=None,
-                   help='wandb实体名称(用户名或组织名)')
-parser.add_argument('--wandb-name', type=str, default=None,
-                   help='wandb运行名称，默认自动生成')
-parser.add_argument('--wandb-offline', action='store_true', default=False,
-                  help='使用wandb离线模式，稍后手动同步')
 
 _logger = logging.getLogger("train")
 stream_handler = logging.StreamHandler()
@@ -918,12 +882,6 @@ def _parse_args():
     # defaults will have been overridden if config file specified.
     args = parser.parse_args(remaining)
 
-    # 添加 gpu 参数
-    if args.local_rank >= 0:
-        args.gpu = args.local_rank
-    else:
-        args.gpu = 0 if torch.cuda.is_available() else None
-    
     # Cache the args as a text string to save them in the output dir later
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
@@ -932,19 +890,9 @@ def _parse_args():
 def main():
     setup_default_logging()
     args, args_text = _parse_args()
-    
-    # 检查CUDA可用性
-    args.cuda = torch.cuda.is_available()
-    args.device = 'cuda' if args.cuda else 'cpu'
-    
-    if args.local_rank == 0:
-        _logger.info(f'Using device: {args.device}')
-    
+
     if args.log_wandb:
         if has_wandb:
-            # 直接在代码中设置API密钥（仅用于测试，不要提交到版本控制系统）
-            os.environ['WANDB_API_KEY'] = '您的完整API密钥'
-            
             wandb.init(project=args.experiment, config=args)
         else:
             _logger.warning(
@@ -956,6 +904,7 @@ def main():
     args.distributed = False
     if "WORLD_SIZE" in os.environ:
         args.distributed = int(os.environ["WORLD_SIZE"]) > 1
+    args.device = "cuda:1"
     args.world_size = 1
     args.rank = 0  # global rank
     if args.distributed:
@@ -1003,26 +952,6 @@ def main():
     if args.dataset in ["cifar10-dvs-tet", "cifar10-dvs"]:
         args.dvs_mode = True
 
-    if args.use_wandb:
-        if args.wandb_offline:
-            os.environ['WANDB_MODE'] = 'offline'
-        
-        wandb_config = {k: v for k, v in args.__dict__.items()}
-        wandb_run_name = args.wandb_name or f"sdt-{args.spike_mode}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=wandb_run_name,
-            config=wandb_config
-        )
-        # 记录超参数和配置
-        if args.use_moe_mlp:
-            wandb.config.update({
-                "n_routed_experts": args.n_routed_experts,
-                "num_experts_per_tok": args.num_experts_per_tok,
-                "use_expert_residual": args.use_expert_residual,
-            })
-
     model = create_model(
         args.model,
         T=args.time_steps,
@@ -1045,30 +974,16 @@ def main():
         spike_mode=args.spike_mode,
         dvs_mode=args.dvs_mode,
         TET=args.TET,
-        use_moe=args.use_moe,
-        use_moe_mlp=args.use_moe_mlp,
-        n_routed_experts=args.n_routed_experts,
-        n_shared_experts=args.n_shared_experts,
-        num_experts_per_tok=args.num_experts_per_tok,
-    ).to(args.device)
+    )
     if args.local_rank == 0:
         _logger.info(f"Creating model {args.model}")
-        try:
-            # 修改输入形状以匹配模型期望的输入
-            _logger.info(       
-                str(
-                    torchinfo.summary(
-                        model, 
-                        input_size=(args.time_steps, 2, args.in_channels, args.img_size, args.img_size),
-                        device=args.device,
-                        depth=4,
-                        verbose=0
-                    )
+        _logger.info(
+            str(
+                torchinfo.summary(
+                    model, (2, args.in_channels, args.img_size, args.img_size)
                 )
             )
-        except Exception as e:
-            _logger.warning(f"Failed to generate model summary: {str(e)}")
-            _logger.info(f"Model structure: {model}")
+        )
 
     if args.num_classes is None:
         assert hasattr(
@@ -1109,11 +1024,6 @@ def main():
         _logger.info(
             f"Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}"
         )
-
-    # 在模型创建后添加
-    if args.use_wandb:
-        # 记录模型图结构
-        wandb.watch(model, log="all", log_freq=100)
 
     # setup augmentation batch splits for contrastive loss or split bn
     num_aug_splits = 0
@@ -1401,13 +1311,19 @@ def main():
             num_splits=num_aug_splits, smoothing=args.smoothing
         ).cuda()
     elif mixup_active:
-        # 如果使用了mixup，需要使用软目标损失
-        train_loss_fn = SoftTargetCrossEntropy()
+        # smoothing is handled with mixup target transform
+        if args.bce_loss:
+            train_loss_fn = BinaryCrossEntropy(target_threshold=args.bce_target_thresh)
+        else:
+            train_loss_fn = SoftTargetCrossEntropy()
     elif args.smoothing:
-        # 如果使用了标签平滑，使用适当的平滑参数
-        train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
+        if args.bce_loss:
+            train_loss_fn = BinaryCrossEntropy(
+                smoothing=args.smoothing, target_threshold=args.bce_target_thresh
+            )
+        else:
+            train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
-        # 确保交叉熵计算正确
         train_loss_fn = nn.CrossEntropyLoss()
 
     train_loss_fn = train_loss_fn.cuda()
@@ -1434,51 +1350,12 @@ def main():
         with open(os.path.join(output_dir, "args.yaml"), "w") as f:
             f.write(args_text)
 
-    # 为TensorBoard创建输出目录
-    writer = None
-    if args.local_rank == 0:
-        tb_log_dir = os.path.join(output_dir, 'tensorboard')
-        os.makedirs(tb_log_dir, exist_ok=True)
-        writer = SummaryWriter(log_dir=tb_log_dir)
-        _logger.info(f'TensorBoard logging to {tb_log_dir}')
-        
-        # 记录超参数
-        hparams = {
-            'batch_size': args.batch_size,
-            'lr': args.lr,
-            'min_lr': args.min_lr,
-            'weight_decay': args.weight_decay,
-            'epochs': num_epochs,
-            'warmup_epochs': args.warmup_epochs,
-            'spike_mode': args.spike_mode,
-            'T': args.time_steps,
-            'use_moe': args.use_moe,
-            'n_routed_experts': args.n_routed_experts if hasattr(args, 'n_routed_experts') and args.use_moe else 0,
-            'num_experts_per_tok': args.num_experts_per_tok if hasattr(args, 'num_experts_per_tok') and args.use_moe else 0,
-        }
-        writer.add_hparams(hparams, {'hparam/dummy': 0})
-        
-        # 可视化数据集样本
-        try:
-            dataiter = iter(loader_train)
-            images, labels = next(dataiter)
-            img_grid = torchvision.utils.make_grid(images[:16], normalize=True)
-            writer.add_image('training_images', img_grid, 0)
-        except Exception as e:
-            _logger.warning(f"无法添加训练图像到TensorBoard: {e}")
-    
     try:
         for epoch in range(start_epoch, num_epochs):
             if args.distributed and hasattr(loader_train.sampler, "set_epoch"):
                 loader_train.sampler.set_epoch(epoch)
 
-            # 确保神经元状态被完全重置
-            functional.reset_net(model)
-
-            # 如果模型有显式重置方法，调用它
-            for module in model.modules():
-                if hasattr(module, 'reset_neurons'):
-                    module.reset_neurons()
+            # eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
 
             train_metrics = train_one_epoch(
                 epoch,
@@ -1496,7 +1373,6 @@ def main():
                 mixup_fn=mixup_fn,
                 dvs_aug=train_dvs_aug,
                 dvs_trival_aug=train_dvs_trival_aug,
-                writer=writer,
             )
 
             if args.distributed and args.dist_bn in ("broadcast", "reduce"):
@@ -1504,12 +1380,23 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == "reduce")
 
-            # 确保验证指标被正确初始化
             eval_metrics = validate(
-                model, loader_eval, validate_loss_fn, args,
-                amp_autocast=amp_autocast, writer=writer, epoch=epoch
+                model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast
             )
-            
+
+            if model_ema is not None and not args.model_ema_force_cpu:
+                if args.distributed and args.dist_bn in ("broadcast", "reduce"):
+                    distribute_bn(model_ema, args.world_size, args.dist_bn == "reduce")
+                ema_eval_metrics = validate(
+                    model_ema.module,
+                    loader_eval,
+                    validate_loss_fn,
+                    args,
+                    amp_autocast=amp_autocast,
+                    log_suffix=" (EMA)",
+                )
+                eval_metrics = ema_eval_metrics
+
             if lr_scheduler is not None:
                 # step LR for next epoch
                 lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
@@ -1534,31 +1421,10 @@ def main():
                     "*** Best metric: {0} (epoch {1})".format(best_metric, best_epoch)
                 )
 
-            if args.use_wandb:
-                wandb.log({
-                    "train/loss": train_metrics['loss'],
-                    "train/moe_loss": train_metrics.get('moe_loss', 0),
-                    "val/loss": eval_metrics['loss'],
-                    "val/acc1": eval_metrics['top1'],
-                    "val/acc5": eval_metrics['top5'],
-                    "epoch": epoch,
-                })
-
-            # 添加调试信息
-            print(f"\nEpoch {epoch} completed. Metrics: {eval_metrics}")
-
     except KeyboardInterrupt:
         pass
     if best_metric is not None:
         _logger.info("*** Best metric: {0} (epoch {1})".format(best_metric, best_epoch))
-
-    # 关闭 TensorBoard writer
-    if writer is not None:
-        writer.close()
-
-    # 训练结束后清理
-    if args.use_wandb:
-        wandb.finish()
 
 
 def train_one_epoch(
@@ -1577,68 +1443,60 @@ def train_one_epoch(
     mixup_fn=None,
     dvs_aug=None,
     dvs_trival_aug=None,
-    writer=None,
 ):
-    global_print_once = True
-    batch_time_m = AverageMeter()
-    data_time_m = AverageMeter()
-    losses_m = AverageMeter()
-    moe_aux_losses_m = AverageMeter()
-    
-    # 添加这些必要的初始化变量
-    second_order = hasattr(optimizer, "is_second_order") and optimizer.is_second_order
-    sample_number = 0
-    start_time = time.time()
-    last_idx = len(loader) - 1
-    
-    # 处理可能的 mixup 关闭
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
         if args.prefetcher:
             if hasattr(loader, "mixup_enabled"):
                 loader.mixup_enabled = False
         elif mixup_fn is not None:
             mixup_fn.mixup_enabled = False
-    
+
+    sample_number = 0
+    start_time = time.time()
+
+    second_order = hasattr(optimizer, "is_second_order") and optimizer.is_second_order
+    batch_time_m = AverageMeter()
+    data_time_m = AverageMeter()
+    losses_m = AverageMeter()
+
     model.train()
     functional.reset_net(model)
-    
-    end = time.time()
 
+    end = time.time()
+    last_idx = len(loader) - 1
+    num_updates = epoch * len(loader)
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
-        
-        # 确保神经元状态被完全重置
-        functional.reset_net(model)
-        
-        if not args.prefetcher:
+        data_time_m.update(time.time() - end)
+        input = input.float()
+        if not args.prefetcher or args.dataset in dvs_utils.DVS_DATASET:
+            if args.amp and not isinstance(input, torch.cuda.HalfTensor):
+                input = input.half()
             input, target = input.cuda(), target.cuda()
+            if dvs_aug is not None:
+                input = dvs_aug(input)
+            if dvs_trival_aug is not None:
+                output = []
+                for i in range(input.shape[0]):
+                    output.append(dvs_trival_aug(input[i]))
+                input = torch.stack(output)
+                del output
             if mixup_fn is not None:
                 input, target = mixup_fn(input, target)
-        
-        # 计算损失
-        with amp_autocast():
-            output = model(input)
-            if isinstance(output, tuple):
-                output = output[0]
-            
-            # 计算基础损失
-            loss = loss_fn(output, target)
-            
-            # 获取并添加MoE辅助损失
-            moe_loss_value = 0.0  # 默认值
-            if hasattr(model, 'get_aux_loss'):
-                moe_loss = model.get_aux_loss()
-                if moe_loss is not None:
-                    # 记录MoE损失值用于日志
-                    moe_loss_value = moe_loss.item()
-                    # 添加到总损失
-                    loss = loss + moe_loss
 
-        # 正确更新损失值
-        if args.distributed:
-            reduced_loss = reduce_tensor(loss.data, args.world_size)
-            losses_m.update(reduced_loss.item(), input.size(0))
-        else:
+        if args.channels_last:
+            input = input.contiguous(memory_format=torch.channels_last)
+
+        with amp_autocast():
+            output = model(input)[0]
+            if args.TET:
+                loss = criterion.TET_loss(
+                    output, target, loss_fn, means=args.TET_means, lamb=args.TET_lamb
+                )
+            else:
+                loss = loss_fn(output, target)
+        sample_number += input.shape[0]
+        if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
 
         optimizer.zero_grad()
@@ -1647,17 +1505,20 @@ def train_one_epoch(
                 loss,
                 optimizer,
                 clip_grad=args.clip_grad,
-                clip_mode='norm',
-                parameters=model_parameters(model, exclude_head="agc" in args.clip_mode),
+                clip_mode=args.clip_mode,
+                parameters=model_parameters(
+                    model, exclude_head="agc" in args.clip_mode
+                ),
                 create_graph=second_order,
             )
         else:
+            # loss.backward()
             loss.backward(create_graph=second_order)
             if args.clip_grad is not None:
                 dispatch_clip_grad(
                     model_parameters(model, exclude_head="agc" in args.clip_mode),
                     value=args.clip_grad,
-                    mode='norm',
+                    mode=args.clip_mode,
                 )
             optimizer.step()
 
@@ -1667,32 +1528,36 @@ def train_one_epoch(
             functional.reset_net(model_ema)
 
         torch.cuda.synchronize()
-        num_updates = epoch * len(loader) + batch_idx
+        num_updates += 1
         batch_time_m.update(time.time() - end)
         if last_batch or batch_idx % args.log_interval == 0:
             lrl = [param_group["lr"] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
 
+            if args.distributed:
+                reduced_loss = reduce_tensor(loss.data, args.world_size)
+                losses_m.update(reduced_loss.item(), input.size(0))
+
             if args.local_rank == 0:
                 _logger.info(
-                    'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
-                    'Loss: {loss.val:#.4g} ({loss.avg:#.3g})  '
-                    'MoE Loss: {moe_loss:#.5f} ({moe_loss_avg:#.5f})  '
-                    'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
-                    '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                    'LR: {lr:.3e}  '
-                    'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
+                    "Train: {} [{:>4d}/{} ({:>3.0f}%)]  "
+                    "Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  "
+                    "Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  "
+                    "({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  "
+                    "LR: {lr:.3e}  "
+                    "Data: {data_time.val:.3f} ({data_time.avg:.3f})".format(
                         epoch,
-                        batch_idx, len(loader),
-                        100. * batch_idx / last_idx,
+                        batch_idx,
+                        len(loader),
+                        100.0 * batch_idx / last_idx,
                         loss=losses_m,
-                        moe_loss=moe_loss_value,
-                        moe_loss_avg=moe_loss_value,
                         batch_time=batch_time_m,
-                        rate=input.size(0) / batch_time_m.val,
-                        rate_avg=input.size(0) / batch_time_m.avg,
+                        rate=input.size(0) * args.world_size / batch_time_m.val,
+                        rate_avg=input.size(0) * args.world_size / batch_time_m.avg,
                         lr=lr,
-                        data_time=data_time_m))
+                        data_time=data_time_m,
+                    )
+                )
 
                 if args.save_images and output_dir:
                     torchvision.utils.save_image(
@@ -1712,55 +1577,9 @@ def train_one_epoch(
         if lr_scheduler is not None:
             lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
 
-        end = time.time()  # 更新结束时间
+        end = time.time()
+        # end for
 
-        # 记录 TensorBoard 指标 (每个批次)
-        if writer is not None and args.local_rank == 0 and batch_idx % args.log_interval == 0:
-            step = epoch * len(loader) + batch_idx
-            writer.add_scalar('Train/Loss', losses_m.val, step)
-            writer.add_scalar('Train/MoE_Loss', moe_aux_losses_m.val, step)
-            writer.add_scalar('Train/LR', lr, step)
-            writer.add_scalar('Train/Data_Time', data_time_m.val, step)
-            writer.add_scalar('Train/Batch_Time', batch_time_m.val, step)
-            
-            # 记录梯度的范数
-            if batch_idx % (args.log_interval * 10) == 0:
-                try:
-                    grad_norm = 0.0
-                    for name, param in model.named_parameters():
-                        if param.requires_grad and param.grad is not None:
-                            grad_norm += param.grad.data.norm(2).item() ** 2
-                    grad_norm = grad_norm ** 0.5
-                    writer.add_scalar('Train/Gradient_Norm', grad_norm, step)
-                except Exception as e:
-                    _logger.warning(f"无法记录梯度范数: {e}")
-
-    # 记录 TensorBoard 指标 (每个 epoch)
-    if writer is not None and args.local_rank == 0:
-        writer.add_scalar('Train/Epoch_Loss', losses_m.avg, epoch)
-        writer.add_scalar('Train/Epoch_MoE_Loss', moe_aux_losses_m.avg, epoch)
-        writer.add_scalar('Train/Epoch_Data_Time', data_time_m.avg, epoch)
-        writer.add_scalar('Train/Epoch_Batch_Time', batch_time_m.avg, epoch)
-        writer.add_scalar('Train/Samples_per_sec', sample_number / batch_time_m.sum, epoch)
-        
-        # 记录专家使用情况 (如果使用 MoE)
-        if hasattr(args, 'use_moe') and args.use_moe:
-            for i, module in enumerate(model.modules()):
-                if hasattr(module, 'aux_loss') and hasattr(module, 'experts') and hasattr(module, '_expert_counts'):
-                    # 记录专家使用频率
-                    try:
-                        with torch.no_grad():
-                            expert_counts = module._expert_counts.cpu().numpy()
-                            fig, ax = plt.subplots(figsize=(10, 5))
-                            ax.bar(range(len(expert_counts)), expert_counts)
-                            ax.set_xlabel('Expert ID')
-                            ax.set_ylabel('Usage Count')
-                            ax.set_title(f'MoE Expert Usage - Layer {i}')
-                            writer.add_figure(f'MoE/Expert_Usage_Layer_{i}', fig, epoch)
-                            plt.close(fig)
-                    except Exception as e:
-                        _logger.warning(f"无法记录MoE专家使用情况: {e}")
-        
     if hasattr(optimizer, "sync_lookahead"):
         optimizer.sync_lookahead()
     if args.local_rank == 0:
@@ -1768,63 +1587,52 @@ def train_one_epoch(
     return OrderedDict([("loss", losses_m.avg)])
 
 
-def validate(
-    model, loader, loss_fn, args, amp_autocast=suppress, log_suffix="", 
-    writer=None, epoch=None
-):
+def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=""):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
     top5_m = AverageMeter()
 
     model.eval()
-    # 重要：重置网络状态
-    functional.reset_net(model)
+    # functional.reset_net(model)
 
     end = time.time()
     last_idx = len(loader) - 1
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
-            # 确保输入是浮点类型
             input = input.float()
+            if (target >= 1000).sum() != 0 or (target < 0).sum() != 0:
+                print(target)
 
             last_batch = batch_idx == last_idx
-            if not args.prefetcher:
-                # 根据原始代码处理输入类型
+            if not args.prefetcher or args.dataset in dvs_utils.DVS_DATASET:
                 if args.amp and not isinstance(input, torch.cuda.HalfTensor):
                     input = input.half()
                 input = input.cuda()
                 target = target.cuda()
-            if hasattr(args, 'channels_last') and args.channels_last:
+            if args.channels_last:
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
                 output = model(input)
-                
-                if isinstance(output, tuple):
-                    output, aux_info = output
-                elif isinstance(output, (tuple, list)):
-                    output = output[0]
-                
-                if args.TET:
-                    output = output.mean(0)
+            if isinstance(output, (tuple, list)):
+                output = output[0]
+            if args.TET:
+                output = output.mean(0)
 
-                # 可选的增强减少 - 与原始代码一致
-                if hasattr(args, 'tta') and args.tta > 1:
-                    reduce_factor = args.tta
-                    output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-                    target = target[0 : target.size(0) : reduce_factor]
-                
-                # 计算损失
-                loss = loss_fn(output, target)
-            
-            # 重要：重置网络状态
+            # augmentation reduction
+            reduce_factor = args.tta
+            if reduce_factor > 1:
+                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                target = target[0 : target.size(0) : reduce_factor]
+
+            if (target >= 1000).sum() != 0 or (target < 0).sum() != 0:
+                print(target)
+            loss = loss_fn(output, target)
             functional.reset_net(model)
 
-            # 计算准确率
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
-            # 处理分布式
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 acc1 = reduce_tensor(acc1, args.world_size)
@@ -1832,28 +1640,18 @@ def validate(
             else:
                 reduced_loss = loss.data
 
-            # 确保所有GPU操作完成
             torch.cuda.synchronize()
 
-            # 按照原始代码更新指标，注意使用不同的大小
             losses_m.update(reduced_loss.item(), input.size(0))
             top1_m.update(acc1.item(), output.size(0))
             top5_m.update(acc5.item(), output.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
-            
-            # 打印调试信息（我们保留这一功能）
-            if batch_idx == 0:
-                print(f"\nValidation Debug:")
-                print(f"1. Output shape: {output.shape}")
-                print(f"2. Target shape: {target.shape}")
-                print(f"3. Loss value: {loss.item():.4f}")
-                print(f"4. Acc@1: {acc1.item():.2f}%, Acc@5: {acc5.item():.2f}%")
-            
-            # 日志输出
-            if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
-                log_name = "Test" if not epoch else f"Test{epoch}"
+            if args.local_rank == 0 and (
+                last_batch or batch_idx % args.log_interval == 0
+            ):
+                log_name = "Test" + log_suffix
                 _logger.info(
                     "{0}: [{1:>4d}/{2}]  "
                     "Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  "
@@ -1870,57 +1668,11 @@ def validate(
                     )
                 )
 
-    # 返回指标
     metrics = OrderedDict(
         [("loss", losses_m.avg), ("top1", top1_m.avg), ("top5", top5_m.avg)]
     )
-    
-    # 记录到TensorBoard（如果可用）
-    if writer is not None and epoch is not None:
-        writer.add_scalar('Validation/Loss', metrics['loss'], epoch)
-        writer.add_scalar('Validation/Top1', metrics['top1'], epoch)
-        writer.add_scalar('Validation/Top5', metrics['top5'], epoch)
 
     return metrics
-
-
-def accuracy(output, target, topk=(1,)):
-    """计算给定topk准确率的函数"""
-    maxk = max(topk)
-    batch_size = target.size(0)
-    
-    # 确保输出和目标的批次大小匹配
-    if output.size(0) != batch_size:
-        output = output[:batch_size]  # 裁剪输出以匹配目标
-    
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-    
-    # 计算正确预测的数量
-    res = []
-    for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
-
-
-class AverageMeter:
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
 
 
 if __name__ == "__main__":

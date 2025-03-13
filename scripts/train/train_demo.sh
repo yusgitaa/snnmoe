@@ -1,0 +1,2 @@
+timestamp=$(date +%Y%m%d_%H%M%S) 
+python train.py -c conf/cifar10/2_256_300E_t4.yml --model sdt --spike-mode lif --use-moe-mlp --n-routed-experts 4 --n-shared-experts 1 --num-experts-per-tok 1 --batch-size 2 --use-wandb --wandb-project snnmoe --wandb-name moe_mlp --wandb-offline > run_logs/log_${timestamp}.txt 2> run_logs/log_${timestamp}.error &

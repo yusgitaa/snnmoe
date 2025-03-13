@@ -1,18 +1,18 @@
 # Dataset / Model parameters
 data_dir: ./data/
-dataset: torch/cifar10
+dataset: torch/cifar100
 pretrained: False
-num_classes: 10
+num_classes: 100
 num_heads: 8
 img_size: 32
 mean:
-    - 0.4914
-    - 0.4822
-    - 0.4465
+    - 0.5071
+    - 0.4867
+    - 0.4408
 std:
-    - 0.2470
-    - 0.2435
-    - 0.2616
+    - 0.2675
+    - 0.2565
+    - 0.2761
 crop_pct: 1.0
 scale:
     - 1.0
@@ -20,7 +20,6 @@ scale:
 ratio: [1.0, 1.0]
 interpolation: bicubic
 train_interpolation: bicubic
-use_conv_as_linear: true
 pooling_stat: "0011"
 time_steps: 4
 layer: 2
@@ -44,7 +43,7 @@ model-ema-decay: 0.9998
 # Misc
 seed: 42
 amp: False
-channels-last: False
+channels_last: False
 batch_size: 64
 val_batch_size: 64
 lr: 3e-4
@@ -58,7 +57,3 @@ warmup_lr: 1e-6
 opt: adamw
 smoothing: 0.1
 workers: 8
-<<<<<<< HEAD
-=======
-aux_loss_alpha: 0.1
->>>>>>> remotes/origin/MLP-moe-clean

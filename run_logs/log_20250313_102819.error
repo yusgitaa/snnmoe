@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "train.py", line 18, in <module>
+    import torchinfo
+ModuleNotFoundError: No module named 'torchinfo'

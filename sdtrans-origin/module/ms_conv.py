@@ -4,10 +4,6 @@ from spikingjelly.clock_driven.neuron import (
     MultiStepLIFNode,
     MultiStepParametricLIFNode,
 )
-<<<<<<< HEAD
-=======
-from module.modeling_deepseek import DeepseekMoE, DeepseekConfig
->>>>>>> remotes/origin/MLP-moe-clean
 
 
 class Erode(nn.Module):
@@ -30,14 +26,6 @@ class MS_MLP_Conv(nn.Module):
         drop=0.0,
         spike_mode="lif",
         layer=0,
-<<<<<<< HEAD
-=======
-        use_moe=False,
-        n_routed_experts=4,
-        n_shared_experts=None,
-        num_experts_per_tok=2,
-        use_expert_residual=False,
->>>>>>> remotes/origin/MLP-moe-clean
     ):
         super().__init__()
         out_features = out_features or in_features
@@ -51,28 +39,6 @@ class MS_MLP_Conv(nn.Module):
             self.fc1_lif = MultiStepParametricLIFNode(
                 init_tau=2.0, detach_reset=True, backend="cupy"
             )
-<<<<<<< HEAD
-=======
-            
-        # MoE配置
-        self.use_moe = use_moe
-        if use_moe:
-            moe_config = DeepseekConfig(
-                hidden_size=hidden_features,
-                n_routed_experts=n_routed_experts,
-                n_shared_experts=n_shared_experts,
-                num_experts_per_tok=num_experts_per_tok,
-                aux_loss_alpha=0.01,
-                intermediate_size=hidden_features * 4,
-                moe_intermediate_size=hidden_features * 4,
-                hidden_dropout_prob=0.1,
-                hidden_act="gelu",
-                pretraining_tp=1,
-                spike_mode=spike_mode,
-                use_expert_residual=use_expert_residual,
-            )
-            self.moe = DeepseekMoE(moe_config)
->>>>>>> remotes/origin/MLP-moe-clean
 
         self.fc2_conv = nn.Conv2d(
             hidden_features, out_features, kernel_size=1, stride=1
@@ -93,7 +59,6 @@ class MS_MLP_Conv(nn.Module):
         T, B, C, H, W = x.shape
         identity = x
 
-<<<<<<< HEAD
         x = self.fc1_lif(x)
         if hook is not None:
             hook[self._get_name() + str(self.layer) + "_fc1_lif"] = x.detach()
@@ -110,50 +75,6 @@ class MS_MLP_Conv(nn.Module):
 
         x = x + identity
         return x, hook
-=======
-        # 原始代码路径，对非MoE模式
-        if not hasattr(self, 'use_moe') or not self.use_moe:
-            x = self.fc1_lif(x)
-            if hook is not None:
-                hook[self._get_name() + str(self.layer) + "_fc1_lif"] = x.detach()
-            x = self.fc1_conv(x.flatten(0, 1))
-            x = self.fc1_bn(x).reshape(T, B, self.c_hidden, H, W).contiguous()
-            if self.res:
-                x = identity + x
-                identity = x
-            x = self.fc2_lif(x)
-            if hook is not None:
-                hook[self._get_name() + str(self.layer) + "_fc2_lif"] = x.detach()
-            x = self.fc2_conv(x.flatten(0, 1))
-            x = self.fc2_bn(x).reshape(T, B, C, H, W).contiguous()
-
-            x = x + identity
-            return x, hook
-        else:
-            # MoE代码路径
-            x = self.fc1_lif(x)
-            if hook is not None:
-                hook[self._get_name() + str(self.layer) + "_fc1_lif"] = x.detach()
-            x = self.fc1_conv(x.flatten(0, 1))
-            x = self.fc1_bn(x).reshape(T, B, self.c_hidden, H, W).contiguous()
-            
-            # 关键修复：保持残差连接的原始位置
-            if self.res:
-                x = identity + x
-                identity = x
-                
-            # MoE只在启用时应用
-            x = self.moe(x)
-            
-            x = self.fc2_lif(x)
-            if hook is not None:
-                hook[self._get_name() + str(self.layer) + "_fc2_lif"] = x.detach()
-            x = self.fc2_conv(x.flatten(0, 1))
-            x = self.fc2_bn(x).reshape(T, B, C, H, W).contiguous()
-
-            x = x + identity
-            return x, hook
->>>>>>> remotes/origin/MLP-moe-clean
 
 
 class MS_SSA_Conv(nn.Module):
@@ -340,14 +261,6 @@ class MS_Block_Conv(nn.Module):
         spike_mode="lif",
         dvs=False,
         layer=0,
-<<<<<<< HEAD
-=======
-        use_moe_mlp=False,
-        n_routed_experts=4,
-        n_shared_experts=None,
-        num_experts_per_tok=2,
-        use_expert_residual=False,
->>>>>>> remotes/origin/MLP-moe-clean
     ):
         super().__init__()
         self.attn = MS_SSA_Conv(
@@ -371,14 +284,6 @@ class MS_Block_Conv(nn.Module):
             drop=drop,
             spike_mode=spike_mode,
             layer=layer,
-<<<<<<< HEAD
-=======
-            use_moe=use_moe_mlp,
-            n_routed_experts=n_routed_experts,
-            n_shared_experts=n_shared_experts,
-            num_experts_per_tok=num_experts_per_tok,
-            use_expert_residual=use_expert_residual,
->>>>>>> remotes/origin/MLP-moe-clean
         )
 
     def forward(self, x, hook=None):
