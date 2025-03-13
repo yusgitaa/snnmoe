@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "train.py", line 46, in <module>
+    import model, dvs_utils, criterion
+  File "/hpc2hdd/JH_DATA/share/jsu360/PrivateShareGroup/jsu360_NLPGroup/lijungang/Research_Works/snnmoe/model/__init__.py", line 1, in <module>
+    from .spikeformer import sdt
+  File "/hpc2hdd/JH_DATA/share/jsu360/PrivateShareGroup/jsu360_NLPGroup/lijungang/Research_Works/snnmoe/model/spikeformer.py", line 18
+    <<<<<<< HEAD
+    ^
+SyntaxError: invalid syntax

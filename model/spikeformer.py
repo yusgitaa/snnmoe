@@ -15,16 +15,6 @@ from module import *
 class SpikeDrivenTransformer(nn.Module):
     def __init__(
         self,
-<<<<<<< HEAD
-        img_size_h=128,
-        img_size_w=128,
-        patch_size=16,
-        in_channels=2,
-        num_classes=11,
-        embed_dims=512,
-        num_heads=8,
-        mlp_ratios=4,
-=======
         img_size_h=224,
         img_size_w=224,
         patch_size=16,
@@ -33,21 +23,12 @@ class SpikeDrivenTransformer(nn.Module):
         embed_dims=96,
         num_heads=None,
         mlp_ratios=None,
->>>>>>> remotes/origin/MLP-moe-clean
         qkv_bias=False,
         qk_scale=None,
         drop_rate=0.0,
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
-<<<<<<< HEAD
-        depths=[6, 8, 6],
-        sr_ratios=[8, 4, 2],
-        T=4,
-        pooling_stat="1111",
-        attn_mode="direct_xor",
-        spike_mode="lif",
-=======
         depths=None,
         sr_ratios=None,
         T=4,
@@ -58,24 +39,18 @@ class SpikeDrivenTransformer(nn.Module):
         n_routed_experts=4,
         n_shared_experts=None,
         num_experts_per_tok=2,
->>>>>>> remotes/origin/MLP-moe-clean
         get_embed=False,
         dvs_mode=False,
         TET=False,
         cml=False,
         pretrained=False,
         pretrained_cfg=None,
-<<<<<<< HEAD
-    ):
-        super().__init__()
-=======
         use_expert_residual=False,
     ):
         super().__init__()
         self.use_moe_sps = use_moe
         self.use_moe_mlp = use_moe_mlp
         
->>>>>>> remotes/origin/MLP-moe-clean
         self.num_classes = num_classes
         self.depths = depths
 
@@ -87,11 +62,7 @@ class SpikeDrivenTransformer(nn.Module):
             x.item() for x in torch.linspace(0, drop_path_rate, depths)
         ]  # stochastic depth decay rule
 
-<<<<<<< HEAD
-        patch_embed = MS_SPS(
-=======
         self.patch_embed = MS_SPS(
->>>>>>> remotes/origin/MLP-moe-clean
             img_size_h=img_size_h,
             img_size_w=img_size_w,
             patch_size=patch_size,
@@ -99,14 +70,11 @@ class SpikeDrivenTransformer(nn.Module):
             embed_dims=embed_dims,
             pooling_stat=pooling_stat,
             spike_mode=spike_mode,
-<<<<<<< HEAD
-=======
             use_moe=use_moe,
             n_routed_experts=n_routed_experts,
             n_shared_experts=n_shared_experts,
             num_experts_per_tok=num_experts_per_tok,
             T=T,
->>>>>>> remotes/origin/MLP-moe-clean
         )
 
         blocks = nn.ModuleList(
@@ -122,12 +90,6 @@ class SpikeDrivenTransformer(nn.Module):
                     drop_path=dpr[j],
                     norm_layer=norm_layer,
                     sr_ratio=sr_ratios,
-<<<<<<< HEAD
-                    attn_mode=attn_mode,
-                    spike_mode=spike_mode,
-                    dvs=dvs_mode,
-                    layer=j,
-=======
                     attn_mode="direct_xor",
                     spike_mode=spike_mode,
                     dvs=dvs_mode,
@@ -137,32 +99,20 @@ class SpikeDrivenTransformer(nn.Module):
                     n_shared_experts=n_shared_experts,
                     num_experts_per_tok=num_experts_per_tok,
                     use_expert_residual=use_expert_residual,
->>>>>>> remotes/origin/MLP-moe-clean
                 )
                 for j in range(depths)
             ]
         )
 
-<<<<<<< HEAD
-        setattr(self, f"patch_embed", patch_embed)
-=======
         setattr(self, f"patch_embed", self.patch_embed)
->>>>>>> remotes/origin/MLP-moe-clean
         setattr(self, f"block", blocks)
 
         # classification head
         if spike_mode in ["lif", "alif", "blif"]:
-<<<<<<< HEAD
-            self.head_lif = MultiStepLIFNode(tau=2.0, detach_reset=True, backend="cupy")
-        elif spike_mode == "plif":
-            self.head_lif = MultiStepParametricLIFNode(
-                init_tau=2.0, detach_reset=True, backend="cupy"
-=======
             self.head_lif = MultiStepLIFNode(tau=2.0, detach_reset=True, backend="torch")
         elif spike_mode == "plif":
             self.head_lif = MultiStepParametricLIFNode(
                 init_tau=2.0, detach_reset=True, backend="torch"
->>>>>>> remotes/origin/MLP-moe-clean
             )
         self.head = (
             nn.Linear(embed_dims, num_classes) if num_classes > 0 else nn.Identity()
@@ -190,29 +140,6 @@ class SpikeDrivenTransformer(nn.Module):
         return x, hook
 
     def forward(self, x, hook=None):
-<<<<<<< HEAD
-        if len(x.shape) < 5:
-            x = (x.unsqueeze(0)).repeat(self.T, 1, 1, 1, 1)
-        else:
-            x = x.transpose(0, 1).contiguous()
-
-        x, hook = self.forward_features(x, hook=hook)
-        x = self.head_lif(x)
-        if hook is not None:
-            hook["head_lif"] = x.detach()
-
-        x = self.head(x)
-        if not self.TET:
-            x = x.mean(0)
-        return x, hook
-
-
-@register_model
-def sdt(**kwargs):
-    model = SpikeDrivenTransformer(
-        **kwargs,
-    )
-=======
         # 完全恢复原始输入处理逻辑
         if not self.use_moe_sps and not self.use_moe_mlp:
             # 原始代码路径
@@ -350,6 +277,5 @@ def sdt(
     
     # 创建模型，现在应该能够正确处理MoE或非MoE模式
     model = SpikeDrivenTransformer(**model_kwargs)
->>>>>>> remotes/origin/MLP-moe-clean
     model.default_cfg = _cfg()
     return model
