@@ -1617,34 +1617,29 @@ def train_one_epoch(
         
         # 计算损失
         with amp_autocast():
-            # 正确处理模型输出
-            model_output = model(input)
+            output = model(input)
+            if isinstance(output, tuple):
+                output = output[0]
             
-            # 检查输出类型并相应处理
-            if isinstance(model_output, tuple):
-                output, aux_info = model_output
-            else:
-                output = model_output
-                aux_info = {}
-            
-            # 计算主损失
+            # 计算基础损失
             loss = loss_fn(output, target)
             
-            # 处理辅助损失
-            moe_loss = torch.tensor(0.0, device=loss.device)
-            if isinstance(aux_info, dict) and "moe_aux_loss" in aux_info:
-                moe_loss = aux_info["moe_aux_loss"]
-                loss = loss + moe_loss
-        
+            # 获取并添加MoE辅助损失
+            moe_loss_value = 0.0  # 默认值
+            if hasattr(model, 'get_aux_loss'):
+                moe_loss = model.get_aux_loss()
+                if moe_loss is not None:
+                    # 记录MoE损失值用于日志
+                    moe_loss_value = moe_loss.item()
+                    # 添加到总损失
+                    loss = loss + moe_loss
+
         # 正确更新损失值
         if args.distributed:
             reduced_loss = reduce_tensor(loss.data, args.world_size)
-            reduced_moe_loss = reduce_tensor(moe_loss.data, args.world_size)
             losses_m.update(reduced_loss.item(), input.size(0))
-            moe_aux_losses_m.update(reduced_moe_loss.item(), input.size(0))
         else:
             losses_m.update(loss.item(), input.size(0))
-            moe_aux_losses_m.update(moe_loss.item(), input.size(0))
 
         optimizer.zero_grad()
         if loss_scaler is not None:
@@ -1680,24 +1675,24 @@ def train_one_epoch(
 
             if args.local_rank == 0:
                 _logger.info(
-                    "Train: {} [{:>4d}/{} ({:>3.0f}%)]  "
-                    "Loss: {loss.val:#.4g} ({loss.avg:#.3g})  "
-                    "MoE Loss: {moe_loss.val:#.6g} ({moe_loss.avg:#.6g})  "
-                    "Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  "
-                    "LR: {lr:.3e}  "
-                    "Data: {data_time.val:.3f} ({data_time.avg:.3f})".format(
+                    'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
+                    'Loss: {loss.val:#.4g} ({loss.avg:#.3g})  '
+                    'MoE Loss: {moe_loss:#.5f} ({moe_loss_avg:#.5f})  '
+                    'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
+                    '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
+                    'LR: {lr:.3e}  '
+                    'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         epoch,
-                        batch_idx,
-                        len(loader),
-                        100.0 * batch_idx / last_idx,
+                        batch_idx, len(loader),
+                        100. * batch_idx / last_idx,
                         loss=losses_m,
-                        moe_loss=moe_aux_losses_m,
+                        moe_loss=moe_loss_value,
+                        moe_loss_avg=moe_loss_value,
                         batch_time=batch_time_m,
-                        rate=input.size(0) * args.world_size / batch_time_m.val,
+                        rate=input.size(0) / batch_time_m.val,
+                        rate_avg=input.size(0) / batch_time_m.avg,
                         lr=lr,
-                        data_time=data_time_m,
-                    )
-                )
+                        data_time=data_time_m))
 
                 if args.save_images and output_dir:
                     torchvision.utils.save_image(

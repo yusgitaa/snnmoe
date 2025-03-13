@@ -212,6 +212,22 @@ class SpikeDrivenTransformer(nn.Module):
             
             return x, aux_info
 
+    def get_aux_loss(self):
+        """收集所有MoE模块的辅助损失"""
+        moe_losses = []
+        
+        # 递归查找所有DeepseekMoE/DeepseekMoESparseMLP模块
+        for module in self.modules():
+            if (module.__class__.__name__ in ['DeepseekMoE', 'DeepseekMoESparseMLP'] and 
+                hasattr(module, 'aux_loss') and 
+                module.aux_loss is not None):
+                moe_losses.append(module.aux_loss)
+                # 移除调试打印
+                # print(f"Found MoE loss: {module.aux_loss.item():.6f}")
+        
+        # 如果找到损失，返回总和；否则返回None
+        return sum(moe_losses) if moe_losses else None
+
 
 @register_model
 def sdt(

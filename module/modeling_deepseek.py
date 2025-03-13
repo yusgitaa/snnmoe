@@ -55,6 +55,8 @@ from spikingjelly.clock_driven.neuron import (
     MultiStepParametricLIFNode,
 )
 
+# 在文件顶部添加
+DEBUG_MOE = False  # 全局调试开关
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -1496,44 +1498,68 @@ class DeepseekMoESparseMLP(nn.Module):
         # 专家使用计数器
         self.register_buffer('_expert_counts', torch.zeros(self.n_routed_experts))
         self.aux_loss = None
-        self.aux_loss_alpha = config.aux_loss_alpha
+        self.aux_loss_alpha = config.aux_loss_alpha * 10  # 从0.01增加到0.1
+        
+        # 使用正交初始化为每个专家提供不同的起点
+        for i in range(self.n_routed_experts):
+            # 获取当前专家
+            expert = self.experts[i]
+            # 对专家的每个线性层应用不同的正交初始化
+            for name, param in expert.named_parameters():
+                if 'weight' in name and len(param.shape) >= 2:
+                    # 只对二维及更高维张量应用正交初始化
+                    nn.init.orthogonal_(param, gain=1.0 + 0.1 * i)
+                elif 'bias' in name:
+                    # 对偏置应用小的均匀初始化
+                    nn.init.uniform_(param, -0.01, 0.01)
+        
+        # 使用均匀初始化确保初始路由概率更均衡
+        nn.init.uniform_(self.router.weight, -0.05, 0.05)
         
         print(f"\nMoE Debug - Init:")
-        print(f"n_routed_experts: {config.n_routed_experts}")
-        print(f"num_experts_per_tok: {config.num_experts_per_tok}")
-        print(f"aux_loss_alpha: {config.aux_loss_alpha}")
+        print(f"n_routed_experts: {self.n_routed_experts}")
+        print(f"num_experts_per_tok: {self.top_k}")
+        print(f"aux_loss_alpha: {self.aux_loss_alpha}")
     
     def forward(self, hidden_states):
         # hidden_states形状: [T, B, C, H, W]
         T, B, C, H, W = hidden_states.shape
         
-        print(f"\nMoE Debug - Forward:")
-        print(f"Input shape: {hidden_states.shape}")
+        # 使用全局调试开关
+        if DEBUG_MOE:
+            print(f"\nMoE Debug - Forward:")
+            print(f"Input shape: {hidden_states.shape}")
         
         # 创建输出变量
         combined_output = torch.zeros_like(hidden_states)
         
-        # 我们需要将5D张量展平为2D来进行路由决策
-        # 对于每个批次和时间步，提取特征的平均表示用于路由
+        # 将5D张量展平为2D来进行路由决策
         flat_states = hidden_states.reshape(T*B, C, H, W)
         pooled_features = F.adaptive_avg_pool2d(flat_states, 1).squeeze(-1).squeeze(-1)  # [T*B, C]
         
         # 计算路由决策
         router_logits = self.router(pooled_features)  # [T*B, n_experts]
+        
+        # 添加噪声帮助打破初始对称性
+        if self.training:
+            router_logits = router_logits + torch.randn_like(router_logits) * 0.2
+        
         routing_weights = F.softmax(router_logits, dim=-1)
         
-        print(f"Gate probs shape: {routing_weights.shape}")
-        print(f"Gate probs mean: {routing_weights.mean(0)}")
+        if DEBUG_MOE:
+            print(f"Gate probs shape: {routing_weights.shape}")
+            print(f"Gate probs mean: {routing_weights.mean(0)}")
         
         # 选择top-k专家
         top_k_weights, top_k_indices = torch.topk(routing_weights, k=self.top_k, dim=-1)
         top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)  # 重新归一化
         
-        print(f"Top-k indices shape: {top_k_indices.shape}")
-        expert_distribution = torch.zeros(self.n_routed_experts, device=top_k_indices.device)
-        for i in range(self.n_routed_experts):
-            expert_distribution[i] = (top_k_indices == i).float().sum() / (top_k_indices.size(0) * top_k_indices.size(1))
-        print(f"Expert selection distribution: {expert_distribution}")
+        if DEBUG_MOE:
+            print(f"Top-k indices shape: {top_k_indices.shape}")
+            expert_distribution = torch.zeros(self.n_routed_experts, device=top_k_indices.device)
+            for i in range(self.n_routed_experts):
+                expert_distribution[i] = (top_k_indices == i).float().sum() / (top_k_indices.size(0) * top_k_indices.size(1))
+            print(f"Expert selection distribution: {expert_distribution}")
         
         # 重置专家使用计数
         if self.training:
@@ -1572,10 +1598,11 @@ class DeepseekMoESparseMLP(nn.Module):
             
             self.aux_loss = (balance_loss + importance_loss) * self.aux_loss_alpha
             
-            print(f"Expert usage: {expert_usage}")
-            print(f"Balance loss: {balance_loss.item():.4f}")
-            print(f"Importance loss: {importance_loss.item():.4f}")
-            print(f"Final aux loss: {self.aux_loss.item():.4f}")
+            if DEBUG_MOE:
+                print(f"Expert usage: {expert_usage}")
+                print(f"Balance loss: {balance_loss.item():.4f}")
+                print(f"Importance loss: {importance_loss.item():.4f}")
+                print(f"Final aux loss: {self.aux_loss.item():.4f}")
         
         # 在计算aux_loss后添加
         if self.training and hasattr(self, 'aux_loss'):
@@ -1600,6 +1627,10 @@ class DeepseekMoESparseMLP(nn.Module):
                 pass
         
         return combined_output
+
+    def get_aux_loss(self):
+        """返回MoE辅助损失"""
+        return self.aux_loss if hasattr(self, 'aux_loss') else None
 
 # 添加别名使DeepseekMoE指向DeepseekMoESparseMLP
 DeepseekMoE = DeepseekMoESparseMLP
