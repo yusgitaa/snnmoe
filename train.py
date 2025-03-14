@@ -52,6 +52,8 @@ import torchvision
 from PIL import Image
 import torch.nn.functional as F
 import wandb
+import PIL.Image
+import shutil
 
 try:
     from apex import amp
@@ -75,6 +77,31 @@ try:
     has_wandb = True
 except ImportError:
     has_wandb = False
+
+
+def cifar10_collate_fn(batch):
+    """将PIL图像转换为tensor的自定义collate函数"""
+    images = []
+    targets = []
+    
+    for img, target in batch:
+        # 如果是PIL图像，转换为tensor
+        if isinstance(img, PIL.Image.Image):
+            img = transforms.ToTensor()(img)
+            # 应用CIFAR10标准化
+            img = transforms.Normalize(
+                mean=[0.4914, 0.4822, 0.4465],
+                std=[0.247, 0.2435, 0.2616]
+            )(img)
+        
+        images.append(img)
+        targets.append(target)
+    
+    # 堆叠batch
+    images = torch.stack(images)
+    targets = torch.tensor(targets)
+    
+    return images, targets
 
 
 def resume_checkpoint(
@@ -897,6 +924,12 @@ parser.add_argument('--wandb-name', type=str, default=None,
                    help='wandb运行名称，默认自动生成')
 parser.add_argument('--wandb-offline', action='store_true', default=False,
                   help='使用wandb离线模式，稍后手动同步')
+parser.add_argument(
+    '--subset-fraction',
+    type=float,
+    default=1.0,
+    help='使用数据集的比例 (0.0-1.0)',
+)
 
 _logger = logging.getLogger("train")
 stream_handler = logging.StreamHandler()
@@ -937,25 +970,37 @@ def main():
     args.cuda = torch.cuda.is_available()
     args.device = 'cuda' if args.cuda else 'cpu'
     
-    if args.local_rank == 0:
-        _logger.info(f'Using device: {args.device}')
-    
-    if args.log_wandb:
-        if has_wandb:
-            # 直接在代码中设置API密钥（仅用于测试，不要提交到版本控制系统）
-            os.environ['WANDB_API_KEY'] = '您的完整API密钥'
-            
-            wandb.init(project=args.experiment, config=args)
-        else:
-            _logger.warning(
-                "You've requested to log metrics to wandb but package not found. "
-                "Metrics not being logged to wandb, try `pip install wandb`"
-            )
-
-    args.prefetcher = not args.no_prefetcher
+    # 设置distributed属性 - 添加这一行
     args.distributed = False
     if "WORLD_SIZE" in os.environ:
         args.distributed = int(os.environ["WORLD_SIZE"]) > 1
+    
+    if args.local_rank == 0:
+        _logger.info(f'Using device: {args.device}')
+    
+    # 现在可以安全地访问args.distributed
+    if args.log_wandb or args.use_wandb:
+        if args.distributed and args.local_rank != 0:
+            _logger.info('Skipping wandb init on rank %d' % args.local_rank)
+        else:
+            if has_wandb:
+                # 使用命令行参数中的experiment作为项目名称
+                wandb_project = args.experiment if args.experiment else "sdt-snn"
+                _logger.info(f'Initializing wandb with project: {wandb_project}')
+                
+                try:
+                    wandb.finish()
+                except:
+                    pass
+                
+                wandb.init(
+                    project=wandb_project,
+                    name=f"{args.model}-{args.spike_mode}-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                    config=args
+                )
+
+    args.prefetcher = not args.no_prefetcher
+    # 不要重复设置distributed属性
     args.world_size = 1
     args.rank = 0  # global rank
     if args.distributed:
@@ -1289,67 +1334,147 @@ def main():
             # download=True,
         )
 
-    # setup mixup / cutmix
+    # 在创建数据集后，修改数据加载器创建逻辑
+
+    # 设置mixup相关变量（无论是否使用子集）
     collate_fn = None
+    mixup_fn = None
     train_dvs_aug, train_dvs_trival_aug = None, None
+    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
+
+    # 设置DVS增强（无论是否使用子集）
     if args.dvs_aug:
         train_dvs_aug = dvs_utils.Cutout(n_holes=1, length=16)
     if args.dvs_trival_aug:
         train_dvs_trival_aug = dvs_utils.SNNAugmentWide()
-    mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0.0 or args.cutmix_minmax is not None
-    if mixup_active:
-        mixup_args = dict(
-            mixup_alpha=args.mixup,
-            cutmix_alpha=args.cutmix,
-            cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob,
-            switch_prob=args.mixup_switch_prob,
-            mode=args.mixup_mode,
-            label_smoothing=args.smoothing,
-            num_classes=args.num_classes,
-        )
-        if args.prefetcher and args.dataset not in dvs_utils.DVS_DATASET:
-            assert (
-                not num_aug_splits
-            )  # collate conflict (need to support deinterleaving in collate mixup)
-            collate_fn = FastCollateMixup(**mixup_args)
-        else:
-            mixup_fn = Mixup(**mixup_args)
 
-    # wrap dataset in AugMix helper
-    if num_aug_splits > 1 and args.dataset not in dvs_utils.DVS_DATASET:
-        dataset_train = AugMixDataset(dataset_train, num_splits=num_aug_splits)
+    # 1. 首先应用子集采样（如果启用）
+    if args.subset_fraction and args.subset_fraction < 1.0:
+        # 对训练集进行子集采样
+        train_subset_size = int(len(dataset_train) * args.subset_fraction)
+        train_indices = torch.randperm(len(dataset_train))[:train_subset_size]
+        dataset_train = torch.utils.data.Subset(dataset_train, train_indices)
+        _logger.info(f'使用训练集子集: {train_subset_size}/{len(dataset_train)} 样本 ({args.subset_fraction:.2%})')
+        
+        # 对测试集也进行子集采样
+        eval_subset_size = int(len(dataset_eval) * args.subset_fraction)
+        eval_indices = torch.randperm(len(dataset_eval))[:eval_subset_size]
+        dataset_eval = torch.utils.data.Subset(dataset_eval, eval_indices)
+        _logger.info(f'使用测试集子集: {eval_subset_size}/{len(dataset_eval)} 样本 ({args.subset_fraction:.2%})')
+        
+        # 使用小数据集时禁用mixup/cutmix
+        args.mixup = 0
+        args.cutmix = 0
+        args.cutmix_minmax = None
+        mixup_active = False  # 确保在子集模式下禁用mixup
+        
+        # 禁用timm的fast_collate和prefetcher
+        args.no_prefetcher = True  # 这会禁用fast_collate
+        args.prefetcher = False
+        
+        _logger.info('在使用数据子集时禁用mixup/cutmix数据增强和fast_collate')
 
-    # create data loaders w/ augmentation pipeiine
-    train_interpolation = args.train_interpolation
-    if args.no_aug or not train_interpolation:
-        train_interpolation = data_config["interpolation"]
-
-    loader_train, loader_eval, train_idx = None, None, None
-    # NOTE(hujiakui): only for ImageNet
-    if args.train_split_path is not None:
-        train_idx = np.load(args.train_split_path).tolist()
-
-    if args.dataset in dvs_utils.DVS_DATASET:
+    # 2. 统一使用原生DataLoader或timm的loader
+    if args.subset_fraction < 1.0 or args.dataset.startswith('dvs'):
+        # 对于子集或DVS数据集，使用PyTorch原生DataLoader
+        _logger.info('使用PyTorch原生DataLoader')
+        
         loader_train = torch.utils.data.DataLoader(
             dataset_train,
-            batch_size=args.batch_size,
+            batch_size=args.batch_size, 
             shuffle=True,
             num_workers=args.workers,
             pin_memory=True,
+            collate_fn=cifar10_collate_fn
         )
+        
         loader_eval = torch.utils.data.DataLoader(
             dataset_eval,
             batch_size=args.batch_size,
-            shuffle=False,
+            shuffle=False, 
             num_workers=args.workers,
             pin_memory=True,
+            collate_fn=cifar10_collate_fn
         )
     else:
+        # 对于全集非DVS数据集，使用timm的高性能loader
+        _logger.info('使用timm数据加载器')
+        
+        # 设置mixup
+        if mixup_active:
+            mixup_args = dict(
+                mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
+                prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
+                label_smoothing=args.smoothing, num_classes=args.num_classes)
+            if args.prefetcher and args.dataset not in dvs_utils.DVS_DATASET:
+                collate_fn = FastCollateMixup(**mixup_args)
+            else:
+                mixup_fn = Mixup(**mixup_args)
+        
+        # wrap dataset in AugMix helper
+        num_aug_splits = 0
+        if args.aug_splits > 0:
+            num_aug_splits = args.aug_splits
+        
+        if num_aug_splits > 1 and args.dataset not in dvs_utils.DVS_DATASET:
+            dataset_train = AugMixDataset(dataset_train, num_splits=num_aug_splits)
+        
+        # 设置插值方法
+        train_interpolation = args.train_interpolation
+        if args.no_aug or not train_interpolation:
+            train_interpolation = data_config["interpolation"]
+        
+        # 在创建训练加载器之前，确保所有必要的参数都已定义
+        # 为缺失的参数设置默认值
+        if not hasattr(args, 'aug_repeats'):
+            args.aug_repeats = 0
+
+        if not hasattr(args, 'reprob'):
+            args.reprob = 0.0
+
+        if not hasattr(args, 'remode'):
+            args.remode = 'const'
+
+        if not hasattr(args, 'recount'):
+            args.recount = 1
+
+        if not hasattr(args, 'resplit'):
+            args.resplit = False
+
+        if not hasattr(args, 'scale'):
+            args.scale = [0.08, 1.0]
+
+        if not hasattr(args, 'ratio'):
+            args.ratio = [3./4., 4./3.]
+
+        if not hasattr(args, 'hflip'):
+            args.hflip = 0.5
+
+        if not hasattr(args, 'vflip'):
+            args.vflip = 0.0
+
+        if not hasattr(args, 'color_jitter'):
+            args.color_jitter = 0.4
+
+        if not hasattr(args, 'aa'):
+            args.aa = None
+
+        if not hasattr(args, 'aug_splits'):
+            args.aug_splits = 0
+
+        if not hasattr(args, 'pin_mem'):
+            args.pin_mem = True
+
+        if not hasattr(args, 'use_multi_epochs_loader'):
+            args.use_multi_epochs_loader = False
+
+        if not hasattr(args, 'worker_seeding'):
+            args.worker_seeding = 'all'
+        
+        # 创建训练加载器
         loader_train = create_loader(
             dataset_train,
-            input_size=data_config["input_size"],
+            input_size=data_config['input_size'],
             batch_size=args.batch_size,
             is_training=True,
             use_prefetcher=args.prefetcher,
@@ -1364,33 +1489,35 @@ def main():
             vflip=args.vflip,
             color_jitter=args.color_jitter,
             auto_augment=args.aa,
+            num_aug_repeats=args.aug_repeats,
             num_aug_splits=num_aug_splits,
             interpolation=train_interpolation,
-            mean=data_config["mean"],
-            std=data_config["std"],
+            mean=data_config['mean'],
+            std=data_config['std'],
             num_workers=args.workers,
             distributed=args.distributed,
             collate_fn=collate_fn,
             pin_memory=args.pin_mem,
             use_multi_epochs_loader=args.use_multi_epochs_loader,
-            # train_idx=train_idx,
+            worker_seeding=args.worker_seeding,
         )
-        # NOTE(hujiakui): train_idx should modify the code of timm
-
+        
+        # 创建评估加载器
         loader_eval = create_loader(
             dataset_eval,
-            input_size=data_config["input_size"],
+            input_size=data_config['input_size'],
             batch_size=args.val_batch_size,
             is_training=False,
             use_prefetcher=args.prefetcher,
-            interpolation=data_config["interpolation"],
-            mean=data_config["mean"],
-            std=data_config["std"],
+            interpolation=data_config['interpolation'],
+            mean=data_config['mean'],
+            std=data_config['std'],
             num_workers=args.workers,
             distributed=args.distributed,
-            crop_pct=data_config["crop_pct"],
+            crop_pct=data_config['crop_pct'],
             pin_memory=args.pin_mem,
         )
+
     if args.local_rank == 0:
         _logger.info("Create dataloader: {}".format(args.dataset))
 
@@ -1547,6 +1674,16 @@ def main():
             # 添加调试信息
             print(f"\nEpoch {epoch} completed. Metrics: {eval_metrics}")
 
+            # 在train_one_epoch函数结束前添加
+            if args.log_wandb:
+                wandb.log({
+                    "train/epoch_loss": train_metrics['loss'],
+                    "train/epoch_moe_aux_loss": train_metrics.get('moe_loss', 0),
+                    "train/epoch_batch_time": batch_time_m.avg,
+                    "train/epoch_data_time": data_time_m.avg,
+                    "train/samples_per_sec": sample_number / batch_time_m.sum,
+                }, step=epoch * len(loader_train))
+
     except KeyboardInterrupt:
         pass
     if best_metric is not None:
@@ -1625,14 +1762,12 @@ def train_one_epoch(
             loss = loss_fn(output, target)
             
             # 获取并添加MoE辅助损失
-            moe_loss_value = 0.0  # 默认值
-            if hasattr(model, 'get_aux_loss'):
-                moe_loss = model.get_aux_loss()
-                if moe_loss is not None:
-                    # 记录MoE损失值用于日志
-                    moe_loss_value = moe_loss.item()
-                    # 添加到总损失
-                    loss = loss + moe_loss
+            moe_aux_loss = model.get_aux_loss() if hasattr(model, 'get_aux_loss') else None
+            if moe_aux_loss is not None:
+                # 更新MoE损失平均值
+                moe_aux_losses_m.update(moe_aux_loss.item(), input.size(0))
+                # 加入总损失中
+                loss = loss + moe_aux_loss
 
         # 正确更新损失值
         if args.distributed:
@@ -1676,8 +1811,8 @@ def train_one_epoch(
             if args.local_rank == 0:
                 _logger.info(
                     'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
-                    'Loss: {loss.val:#.4g} ({loss.avg:#.3g})  '
-                    'MoE Loss: {moe_loss:#.5f} ({moe_loss_avg:#.5f})  '
+                    'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
+                    'MoE Aux Loss: {moe_loss.val:.6f} ({moe_loss.avg:.6f})  '
                     'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                     '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
                     'LR: {lr:.3e}  '
@@ -1686,11 +1821,10 @@ def train_one_epoch(
                         batch_idx, len(loader),
                         100. * batch_idx / last_idx,
                         loss=losses_m,
-                        moe_loss=moe_loss_value,
-                        moe_loss_avg=moe_loss_value,
+                        moe_loss=moe_aux_losses_m,
                         batch_time=batch_time_m,
-                        rate=input.size(0) / batch_time_m.val,
-                        rate_avg=input.size(0) / batch_time_m.avg,
+                        rate=input.size(0) * args.world_size / batch_time_m.val,
+                        rate_avg=input.size(0) * args.world_size / batch_time_m.avg,
                         lr=lr,
                         data_time=data_time_m))
 
@@ -1718,7 +1852,7 @@ def train_one_epoch(
         if writer is not None and args.local_rank == 0 and batch_idx % args.log_interval == 0:
             step = epoch * len(loader) + batch_idx
             writer.add_scalar('Train/Loss', losses_m.val, step)
-            writer.add_scalar('Train/MoE_Loss', moe_aux_losses_m.val, step)
+            writer.add_scalar('Train/MoE_Aux_Loss', moe_aux_losses_m.val, step)
             writer.add_scalar('Train/LR', lr, step)
             writer.add_scalar('Train/Data_Time', data_time_m.val, step)
             writer.add_scalar('Train/Batch_Time', batch_time_m.val, step)
@@ -1738,7 +1872,7 @@ def train_one_epoch(
     # 记录 TensorBoard 指标 (每个 epoch)
     if writer is not None and args.local_rank == 0:
         writer.add_scalar('Train/Epoch_Loss', losses_m.avg, epoch)
-        writer.add_scalar('Train/Epoch_MoE_Loss', moe_aux_losses_m.avg, epoch)
+        writer.add_scalar('Train/Epoch_MoE_Aux_Loss', moe_aux_losses_m.avg, epoch)
         writer.add_scalar('Train/Epoch_Data_Time', data_time_m.avg, epoch)
         writer.add_scalar('Train/Epoch_Batch_Time', batch_time_m.avg, epoch)
         writer.add_scalar('Train/Samples_per_sec', sample_number / batch_time_m.sum, epoch)
@@ -1765,7 +1899,20 @@ def train_one_epoch(
         optimizer.sync_lookahead()
     if args.local_rank == 0:
         _logger.info(f"samples / s = {sample_number / (time.time() - start_time): .3f}")
+
+    # 添加以下代码，确保MoE损失被记录到wandb
+    if args.log_wandb:
+        wandb.log({
+            "train/loss": losses_m.val,
+            "train/moe_aux_loss": moe_aux_losses_m.val,
+            "train/lr": lr,
+            "train/batch_time": batch_time_m.val,
+            "train/data_time": data_time_m.val,
+        }, step=epoch * len(loader) + batch_idx)
+
     return OrderedDict([("loss", losses_m.avg)])
+
+
 
 
 def validate(
@@ -1881,6 +2028,14 @@ def validate(
         writer.add_scalar('Validation/Top1', metrics['top1'], epoch)
         writer.add_scalar('Validation/Top5', metrics['top5'], epoch)
 
+    # 在validate函数结束前添加
+    if args.log_wandb:
+        wandb.log({
+            "val/loss": metrics['loss'],
+            "val/top1": metrics['top1'],
+            "val/top5": metrics['top5'],
+        }, step=epoch)
+
     return metrics
 
 
@@ -1905,6 +2060,10 @@ def accuracy(output, target, topk=(1,)):
     return res
 
 
+
+
+
+
 class AverageMeter:
     """Computes and stores the average and current value"""
     def __init__(self):
@@ -1921,6 +2080,21 @@ class AverageMeter:
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+
+
+class SubsetDataset(torch.utils.data.Dataset):
+    """数据集的子集"""
+    def __init__(self, dataset, fraction=0.1):
+        self.dataset = dataset
+        self.fraction = fraction
+        self.length = int(len(dataset) * fraction)
+        self.indices = torch.randperm(len(dataset))[:self.length]
+        
+    def __getitem__(self, idx):
+        return self.dataset[self.indices[idx]]
+        
+    def __len__(self):
+        return self.length
 
 
 if __name__ == "__main__":
