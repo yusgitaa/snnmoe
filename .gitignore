@@ -1,0 +1,9 @@
+*.pyc
+__pycache__/
+.DS_Store
+output/
+data/
+*.pth
+*.ckpt
+.vscode/
+.idea/

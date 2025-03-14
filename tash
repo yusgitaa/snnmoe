@@ -1,0 +1,77 @@
+[33mcommit 569fe92d6c8c2cc160f5252886c782ad0ba42f84[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mMLP-moe-clean[m[33m, [m[1;31morigin/MLP-moe-clean[m[33m)[m
+Author: yuskyang <yuksday@163.com>
+Date:   Thu Mar 13 09:44:05 2025 +0800
+
+    实现MLP-MoE混合专家模型 (干净版本)
+
+[33mcommit e704f90fcab69cf65ffd7477750063c79c238f64[m[33m ([m[1;32mmaster[m[33m)[m
+Author: yuskyang <yuksday@163.com>
+Date:   Thu Mar 13 09:39:03 2025 +0800
+
+    MLP-MoE
+
+[33mcommit 04bda7526f1459316b47de91800aa0bb14723b4c[m
+Author: yuskyang <yuksday@163.com>
+Date:   Wed Mar 12 11:06:01 2025 +0800
+
+    fixoriginalsdtrans
+
+[33mcommit 6b11febd2a897a5da0c02ef667a29c74dbeff3e4[m[33m ([m[1;31morigin/master[m[33m)[m
+Author: yuskyang <yuksday@163.com>
+Date:   Tue Mar 11 11:16:09 2025 +0800
+
+    feat: add core implementation files
+    
+    Add missing core files:
+    - module/ms_conv.py: Multi-step convolution implementation
+    - module/modeling_deepseek.py: DeepSeek MoE model
+    - module/sps.py: Spike Processing System
+    - module/configuration_deepseek.py: Model configuration
+    - model/spikeformer.py: Main model architecture
+    - train.py: Training script
+
+[33mcommit c81223504e704f3624af06cb90002d83a838c545[m
+Author: yuskyang <yuksday@163.com>
+Date:   Tue Mar 11 11:14:15 2025 +0800
+
+    feat: add all source files
+    
+    Add core implementation files:
+    - module/: Core modules including MoE, SPS, and MS-Conv
+    - model/: SpikeFormer implementation
+    - Utils and scripts for training and validation
+    - Configuration and criterion files
+
+[33mcommit ebe8ae5ab7de15072c47bc448ee0f813fb9339a3[m
+Author: yuskyang <yuksday@163.com>
+Date:   Tue Mar 11 11:06:13 2025 +0800
+
+    init: initial commit of Spike-Driven-Transformer
+    
+    Core features:
+    - Add SpikeFormer model implementation
+    - Add training script with TensorBoard support
+    - Add MoE (Mixture of Experts) integration
+    - Add SPS (Spike Processing System) module
+    - Add MS-Conv module for spike-based convolution
+    - Add configuration files for CIFAR-10
+    
+    Technical details:
+    - Implement spike-based attention mechanism
+    - Add LIF neuron support
+    - Add TensorBoard visualization
+    - Add confusion matrix monitoring
+    - Optimize training process
+
+[33mcommit 88361f9d555643f468e71c56c01d97ba6dd2af1b[m
+Author: yuskyang <yuksday@163.com>
+Date:   Tue Mar 11 11:02:48 2025 +0800
+
+    init: initial commit of Spike-Driven-Transformer
+    
+    - Add core model implementation files
+    - Add training script
+    - Add model configuration
+    - Add MoE support
+    - Add SPS (Spike Processing System) module
+    - Add MS-Conv module for spike-based convolution
