@@ -1322,7 +1322,7 @@ def main():
             batch_size=args.batch_size,
             repeats=args.epoch_repeats,
             transform=transforms_train,
-            # download=True,
+            download=True,
         )
         dataset_eval = create_dataset(
             args.dataset,
@@ -1331,7 +1331,7 @@ def main():
             is_training=False,
             batch_size=args.batch_size,
             transform=transforms_eval,
-            # download=True,
+            download=True,
         )
 
     # 在创建数据集后，修改数据加载器创建逻辑
@@ -1594,6 +1594,12 @@ def main():
         except Exception as e:
             _logger.warning(f"无法添加训练图像到TensorBoard: {e}")
     
+    # 在使用batch_time_m之前添加这些代码（在训练循环前）
+    # 初始化用于记录训练时间的AverageMeter
+    batch_time_m = AverageMeter()
+    data_time_m = AverageMeter()  # 添加数据加载时间计量器
+    sample_number = 0  # 添加样本数量计数器
+    
     try:
         for epoch in range(start_epoch, num_epochs):
             if args.distributed and hasattr(loader_train.sampler, "set_epoch"):
@@ -1662,14 +1668,30 @@ def main():
                 )
 
             if args.use_wandb:
-                wandb.log({
-                    "train/loss": train_metrics['loss'],
-                    "train/moe_loss": train_metrics.get('moe_loss', 0),
-                    "val/loss": eval_metrics['loss'],
-                    "val/acc1": eval_metrics['top1'],
-                    "val/acc5": eval_metrics['top5'],
+                # 创建默认值
+                batch_time_m = AverageMeter() if 'batch_time_m' not in locals() else batch_time_m
+                data_time_m = AverageMeter()
+                sample_number = args.batch_size * len(loader_train)
+                
+                # 使用.get()方法安全地访问字典键
+                wandb_log_dict = {
+                    "train/loss": train_metrics.get('loss', 0),
+                    "val/loss": eval_metrics.get('loss', 0),
+                    "val/acc1": eval_metrics.get('top1', 0),
+                    "val/acc5": eval_metrics.get('top5', 0),
                     "epoch": epoch,
-                })
+                }
+                
+                # 只有当键存在时才添加到日志字典
+                if 'top1' in train_metrics:
+                    wandb_log_dict["train/acc1"] = train_metrics['top1']
+                if 'top5' in train_metrics:
+                    wandb_log_dict["train/acc5"] = train_metrics['top5']
+                if 'moe_loss' in train_metrics:
+                    wandb_log_dict["train/moe_loss"] = train_metrics['moe_loss']
+                
+                # 记录日志
+                wandb.log(wandb_log_dict, step=epoch * len(loader_train))
 
             # 添加调试信息
             print(f"\nEpoch {epoch} completed. Metrics: {eval_metrics}")
@@ -1681,7 +1703,7 @@ def main():
                     "train/epoch_moe_aux_loss": train_metrics.get('moe_loss', 0),
                     "train/epoch_batch_time": batch_time_m.avg,
                     "train/epoch_data_time": data_time_m.avg,
-                    "train/samples_per_sec": sample_number / batch_time_m.sum,
+                    "train/samples_per_sec": sample_number / batch_time_m.sum if batch_time_m.sum > 0 else 0,
                 }, step=epoch * len(loader_train))
 
     except KeyboardInterrupt:
@@ -1911,6 +1933,7 @@ def train_one_epoch(
         }, step=epoch * len(loader) + batch_idx)
 
     return OrderedDict([("loss", losses_m.avg)])
+
 
 
 
