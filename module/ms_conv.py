@@ -32,6 +32,7 @@ class MS_MLP_Conv(nn.Module):
         n_shared_experts=None,
         num_experts_per_tok=2,
         use_expert_residual=False,
+        aux_loss_alpha=0.01,
     ):
         super().__init__()
         out_features = out_features or in_features
@@ -54,7 +55,7 @@ class MS_MLP_Conv(nn.Module):
                 n_routed_experts=n_routed_experts,
                 n_shared_experts=n_shared_experts,
                 num_experts_per_tok=num_experts_per_tok,
-                aux_loss_alpha=0.01,
+                aux_loss_alpha=aux_loss_alpha,
                 intermediate_size=hidden_features * 4,
                 moe_intermediate_size=hidden_features * 4,
                 hidden_dropout_prob=0.1,
@@ -317,6 +318,7 @@ class MS_Block_Conv(nn.Module):
         n_shared_experts=None,
         num_experts_per_tok=2,
         use_expert_residual=False,
+        aux_loss_alpha=0.01,
     ):
         super().__init__()
         self.attn = MS_SSA_Conv(
@@ -345,6 +347,7 @@ class MS_Block_Conv(nn.Module):
             n_shared_experts=n_shared_experts,
             num_experts_per_tok=num_experts_per_tok,
             use_expert_residual=use_expert_residual,
+            aux_loss_alpha=aux_loss_alpha,
         )
 
     def forward(self, x, hook=None):

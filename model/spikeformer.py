@@ -46,6 +46,7 @@ class SpikeDrivenTransformer(nn.Module):
         pretrained=False,
         pretrained_cfg=None,
         use_expert_residual=False,
+        aux_loss_alpha=0.01,
     ):
         super().__init__()
         self.use_moe_sps = use_moe
@@ -87,20 +88,21 @@ class SpikeDrivenTransformer(nn.Module):
                     qk_scale=qk_scale,
                     drop=drop_rate,
                     attn_drop=attn_drop_rate,
-                    drop_path=dpr[j],
+                    drop_path=dpr[i],
                     norm_layer=norm_layer,
                     sr_ratio=sr_ratios,
                     attn_mode="direct_xor",
                     spike_mode=spike_mode,
                     dvs=dvs_mode,
-                    layer=j,
+                    layer=i,
                     use_moe_mlp=use_moe_mlp,
                     n_routed_experts=n_routed_experts,
                     n_shared_experts=n_shared_experts,
                     num_experts_per_tok=num_experts_per_tok,
                     use_expert_residual=use_expert_residual,
+                    aux_loss_alpha=aux_loss_alpha,
                 )
-                for j in range(depths)
+                for i in range(depths)
             ]
         )
 
@@ -246,6 +248,7 @@ def sdt(
     n_shared_experts=None,
     num_experts_per_tok=2,
     use_expert_residual=False,
+    aux_loss_alpha=0.01,
     **kwargs,
 ):
     print(f"\nModel Debug - Init:")
@@ -264,12 +267,13 @@ def sdt(
         T=T,
         pooling_stat=pooling_stat,
         spike_mode=spike_mode,
-        use_moe=use_moe,  # 始终传递
-        use_moe_mlp=use_moe_mlp,  # 始终传递
+        use_moe=use_moe,
+        use_moe_mlp=use_moe_mlp,
         n_routed_experts=n_routed_experts,
         n_shared_experts=n_shared_experts,
         num_experts_per_tok=num_experts_per_tok,
         use_expert_residual=use_expert_residual,
+        aux_loss_alpha=aux_loss_alpha,
     )
     
     # 更新配置，允许通过kwargs覆盖默认值

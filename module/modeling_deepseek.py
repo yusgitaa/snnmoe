@@ -1498,7 +1498,8 @@ class DeepseekMoESparseMLP(nn.Module):
         # 专家使用计数器
         self.register_buffer('_expert_counts', torch.zeros(self.n_routed_experts))
         self.aux_loss = None
-        self.aux_loss_alpha = config.aux_loss_alpha * 10  # 从0.01增加到0.1
+        # 直接使用配置中的aux_loss_alpha，不进行硬编码乘法
+        self.aux_loss_alpha = config.aux_loss_alpha
         
         # 使用正交初始化为每个专家提供不同的起点
         for i in range(self.n_routed_experts):
@@ -1520,6 +1521,8 @@ class DeepseekMoESparseMLP(nn.Module):
         print(f"n_routed_experts: {self.n_routed_experts}")
         print(f"num_experts_per_tok: {self.top_k}")
         print(f"aux_loss_alpha: {self.aux_loss_alpha}")
+        # 打印接收到的aux_loss_alpha值
+        print(f"MoE接收到的aux_loss_alpha: {config.aux_loss_alpha}")
     
     def forward(self, hidden_states):
         # hidden_states形状: [T, B, C, H, W]

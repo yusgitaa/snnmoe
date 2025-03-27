@@ -1068,33 +1068,38 @@ def main():
                 "use_expert_residual": args.use_expert_residual,
             })
 
+    # 在解析完配置文件和命令行参数后
+    if not hasattr(args, 'aux_loss_alpha') or args.aux_loss_alpha is None:
+        args.aux_loss_alpha = 0.2  # 手动设置默认值
+    print(f"Using aux_loss_alpha: {args.aux_loss_alpha}")
+
+    # 在创建模型之前，显式打印并修改aux_loss_alpha
+    print(f"Command line aux_loss_alpha: {args.aux_loss_alpha}")
+    # 通过环境变量覆盖
+    os.environ['MOE_AUX_LOSS_ALPHA'] = str(args.aux_loss_alpha)
+
+    # 创建模型，只传递必要的参数
     model = create_model(
         args.model,
-        T=args.time_steps,
         pretrained=args.pretrained,
-        drop_rate=args.drop,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=args.drop_block,
-        num_heads=args.num_heads,
         num_classes=args.num_classes,
-        pooling_stat=args.pooling_stat,
-        img_size_h=args.img_size,
-        img_size_w=args.img_size,
-        patch_size=args.patch_size,
-        embed_dims=args.dim,
-        mlp_ratios=args.mlp_ratio,
-        in_channels=args.in_channels,
-        qkv_bias=False,
+        drop_rate=getattr(args, 'drop', 0.0),
+        drop_path_rate=getattr(args, 'drop_path', 0.0),
+        drop_block_rate=getattr(args, 'drop_block', None),
+        T=args.time_steps,
+        num_heads=args.num_heads,
         depths=args.layer,
+        mlp_ratios=args.mlp_ratio,
         sr_ratios=1,
+        pooling_stat=args.pooling_stat,
         spike_mode=args.spike_mode,
-        dvs_mode=args.dvs_mode,
-        TET=args.TET,
         use_moe=args.use_moe,
         use_moe_mlp=args.use_moe_mlp,
         n_routed_experts=args.n_routed_experts,
         n_shared_experts=args.n_shared_experts,
         num_experts_per_tok=args.num_experts_per_tok,
+        use_expert_residual=getattr(args, 'use_expert_residual', False),
+        aux_loss_alpha=args.aux_loss_alpha,
     ).to(args.device)
     if args.local_rank == 0:
         _logger.info(f"Creating model {args.model}")
@@ -1629,7 +1634,7 @@ def main():
                 mixup_fn=mixup_fn,
                 dvs_aug=train_dvs_aug,
                 dvs_trival_aug=train_dvs_trival_aug,
-                writer=writer,
+                writer=writer,  # 传递 writer 参数
             )
 
             if args.distributed and args.dist_bn in ("broadcast", "reduce"):
@@ -1638,9 +1643,10 @@ def main():
                 distribute_bn(model, args.world_size, args.dist_bn == "reduce")
 
             # 确保验证指标被正确初始化
+            total_steps = (epoch + 1) * len(loader_train)
             eval_metrics = validate(
                 model, loader_eval, validate_loss_fn, args,
-                amp_autocast=amp_autocast, writer=writer, epoch=epoch
+                amp_autocast=amp_autocast, epoch=epoch, total_steps=total_steps, writer=writer
             )
             
             if lr_scheduler is not None:
@@ -1698,22 +1704,19 @@ def main():
 
             # 在train_one_epoch函数结束前添加
             if args.log_wandb:
+                global_step = (epoch + 1) * len(loader_train)  # epoch结束时的总步数
                 wandb.log({
-                    "train/epoch_loss": train_metrics['loss'],
+                    "train/loss": train_metrics['loss'],
                     "train/epoch_moe_aux_loss": train_metrics.get('moe_loss', 0),
                     "train/epoch_batch_time": batch_time_m.avg,
                     "train/epoch_data_time": data_time_m.avg,
                     "train/samples_per_sec": sample_number / batch_time_m.sum if batch_time_m.sum > 0 else 0,
-                }, step=epoch * len(loader_train))
+                }, step=global_step)
 
     except KeyboardInterrupt:
         pass
     if best_metric is not None:
         _logger.info("*** Best metric: {0} (epoch {1})".format(best_metric, best_epoch))
-
-    # 关闭 TensorBoard writer
-    if writer is not None:
-        writer.close()
 
     # 训练结束后清理
     if args.use_wandb:
@@ -1736,7 +1739,7 @@ def train_one_epoch(
     mixup_fn=None,
     dvs_aug=None,
     dvs_trival_aug=None,
-    writer=None,
+    writer=None,  # 传递 writer 参数
 ):
     global_print_once = True
     batch_time_m = AverageMeter()
@@ -1924,23 +1927,19 @@ def train_one_epoch(
 
     # 添加以下代码，确保MoE损失被记录到wandb
     if args.log_wandb:
+        global_step = (epoch + 1) * len(loader)  # epoch结束时的总步数
         wandb.log({
             "train/loss": losses_m.val,
             "train/moe_aux_loss": moe_aux_losses_m.val,
             "train/lr": lr,
-            "train/batch_time": batch_time_m.val,
-            "train/data_time": data_time_m.val,
-        }, step=epoch * len(loader) + batch_idx)
+        }, step=global_step)  # 使用统一的全局步数
 
     return OrderedDict([("loss", losses_m.avg)])
 
 
-
-
-
 def validate(
     model, loader, loss_fn, args, amp_autocast=suppress, log_suffix="", 
-    writer=None, epoch=None
+    epoch=None, total_steps=None, writer=None  # 添加 writer 参数
 ):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
@@ -2053,11 +2052,12 @@ def validate(
 
     # 在validate函数结束前添加
     if args.log_wandb:
+        # 使用训练的总步数作为基准
         wandb.log({
             "val/loss": metrics['loss'],
             "val/top1": metrics['top1'],
             "val/top5": metrics['top5'],
-        }, step=epoch)
+        }, step=total_steps)
 
     return metrics
 
@@ -2118,6 +2118,11 @@ class SubsetDataset(torch.utils.data.Dataset):
         
     def __len__(self):
         return self.length
+
+
+def get_arg_value(args, name, default=None):
+    """安全地从args中获取属性值，如果不存在则返回默认值"""
+    return getattr(args, name, default)
 
 
 if __name__ == "__main__":
