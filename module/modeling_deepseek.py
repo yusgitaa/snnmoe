@@ -1521,20 +1521,16 @@ class DeepseekMoESparseMLP(nn.Module):
         print(f"n_routed_experts: {self.n_routed_experts}")
         print(f"num_experts_per_tok: {self.top_k}")
         print(f"aux_loss_alpha: {self.aux_loss_alpha}")
-        # 打印接收到的aux_loss_alpha值
-        print(f"MoE接收到的aux_loss_alpha: {config.aux_loss_alpha}")
+        
+        # 添加统计信息控制参数
+        self.print_stats = False  # 默认不打印
+        self.print_interval = 100  # 每100个批次打印一次
+        self._step_counter = 0
     
     def forward(self, hidden_states):
+        """完全无循环的MoE实现"""
         # hidden_states形状: [T, B, C, H, W]
         T, B, C, H, W = hidden_states.shape
-        
-        # 使用全局调试开关
-        if DEBUG_MOE:
-            print(f"\nMoE Debug - Forward:")
-            print(f"Input shape: {hidden_states.shape}")
-        
-        # 创建输出变量
-        combined_output = torch.zeros_like(hidden_states)
         
         # 将5D张量展平为2D来进行路由决策
         flat_states = hidden_states.reshape(T*B, C, H, W)
@@ -1542,52 +1538,54 @@ class DeepseekMoESparseMLP(nn.Module):
         
         # 计算路由决策
         router_logits = self.router(pooled_features)  # [T*B, n_experts]
-        
-        # 添加噪声帮助打破初始对称性
         if self.training:
             router_logits = router_logits + torch.randn_like(router_logits) * 0.2
-        
         routing_weights = F.softmax(router_logits, dim=-1)
-        
-        if DEBUG_MOE:
-            print(f"Gate probs shape: {routing_weights.shape}")
-            print(f"Gate probs mean: {routing_weights.mean(0)}")
         
         # 选择top-k专家
         top_k_weights, top_k_indices = torch.topk(routing_weights, k=self.top_k, dim=-1)
         top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)  # 重新归一化
         
-        if DEBUG_MOE:
-            print(f"Top-k indices shape: {top_k_indices.shape}")
-            expert_distribution = torch.zeros(self.n_routed_experts, device=top_k_indices.device)
-            for i in range(self.n_routed_experts):
-                expert_distribution[i] = (top_k_indices == i).float().sum() / (top_k_indices.size(0) * top_k_indices.size(1))
-            print(f"Expert selection distribution: {expert_distribution}")
-        
-        # 重置专家使用计数
+        # ========== 修复的张量化实现 ==========
+        # 1. 计算专家使用计数
         if self.training:
-            self._expert_counts.zero_()
+            flat_indices = top_k_indices.reshape(-1)
+            expert_counts = torch.zeros(self.n_routed_experts, device=hidden_states.device)
+            expert_counts.scatter_add_(0, flat_indices, torch.ones_like(flat_indices, dtype=torch.float))
+            self._expert_counts = expert_counts
         
-        # 处理每个批次元素
-        for tb_idx in range(T*B):
-            t_idx = tb_idx // B
-            b_idx = tb_idx % B
-            
-            # 获取这个元素的top-k专家和权重
-            element_experts = top_k_indices[tb_idx]
-            element_weights = top_k_weights[tb_idx]
-            
-            # 处理每个选定的专家
-            for k, (expert_idx, weight) in enumerate(zip(element_experts, element_weights)):
-                # 增加专家使用计数
-                if self.training:
-                    self._expert_counts[expert_idx] += 1
-                
-                # 用专家处理整个输入
-                expert_output = self.experts[expert_idx](hidden_states)
-                
-                # 只保留当前时间步和批次的输出，并加权
-                combined_output[t_idx, b_idx] += weight * expert_output[t_idx, b_idx]
+        # 2. 计算所有专家的输出
+        all_expert_outputs = torch.stack([expert(hidden_states) for expert in self.experts])  # [n_experts, T, B, C, H, W]
+        
+        # 3. 创建路由矩阵 - 更高效的纯张量实现
+        # 初始化路由矩阵
+        router_matrix = torch.zeros(T*B, self.n_routed_experts, device=hidden_states.device)
+
+        # 创建批次索引和样本内索引
+        batch_indices = torch.arange(T*B, device=hidden_states.device)
+        batch_indices = batch_indices.repeat(self.top_k, 1).t().reshape(-1)  # [T*B*top_k]
+
+        # 将top_k_indices展平为一维
+        expert_indices = top_k_indices.reshape(-1)  # [T*B*top_k]
+        weights = top_k_weights.reshape(-1)  # [T*B*top_k]
+
+        # 为每个(样本,专家)对构建索引张量
+        indices = torch.stack([batch_indices, expert_indices], dim=1)  # [T*B*top_k, 2]
+
+        # 使用sparse张量构建路由矩阵
+        sparse_router = torch.sparse.FloatTensor(
+            indices.t(),  # 需要转置为[2, T*B*top_k]格式
+            weights,      # [T*B*top_k]
+            torch.Size([T*B, self.n_routed_experts])
+        ).to_dense()
+
+        router_matrix = sparse_router
+        
+        # 4. 重塑路由矩阵为 [T, B, n_experts]
+        router_matrix = router_matrix.reshape(T, B, self.n_routed_experts)
+        
+        # 5. 应用einsum进行高效组合
+        combined_output = torch.einsum('tbe,etbchw->tbchw', router_matrix, all_expert_outputs)
         
         # 计算辅助损失
         if self.training:
@@ -1601,33 +1599,52 @@ class DeepseekMoESparseMLP(nn.Module):
             
             self.aux_loss = (balance_loss + importance_loss) * self.aux_loss_alpha
             
-            if DEBUG_MOE:
-                print(f"Expert usage: {expert_usage}")
-                print(f"Balance loss: {balance_loss.item():.4f}")
-                print(f"Importance loss: {importance_loss.item():.4f}")
-                print(f"Final aux loss: {self.aux_loss.item():.4f}")
-        
-        # 在计算aux_loss后添加
-        if self.training and hasattr(self, 'aux_loss'):
-            # 计算专家使用率
-            expert_usage = self._expert_counts / self._expert_counts.sum()
+            # 路由特征的统计处理部分
+            self._step_counter += 1
             
-            # 如果wandb可用则记录
-            try:
-                import wandb
-                if wandb.run is not None:
-                    wandb_data = {
-                        f"moe/expert_{i}_usage": usage.item() 
-                        for i, usage in enumerate(expert_usage)
-                    }
-                    wandb_data.update({
-                        "moe/balance_loss": balance_loss.item(),
-                        "moe/importance_loss": importance_loss.item(),
-                        "moe/aux_loss": self.aux_loss.item(),
-                    })
-                    wandb.log(wandb_data)
-            except ImportError:
-                pass
+            # 只在指定间隔打印
+            should_print = self.print_stats and (self._step_counter % self.print_interval == 0)
+            
+            # 计算统计量但不每次都打印
+            with torch.no_grad():
+                feat_mean = pooled_features.mean().item()
+                feat_std = pooled_features.std().item()
+                feat_max = pooled_features.max().item()
+                feat_min = pooled_features.min().item()
+                
+                # 只在需要时打印
+                if should_print:
+                    print(f"\nMoE统计 [step {self._step_counter}] - "
+                          f"均值: {feat_mean:.4f}, 标准差: {feat_std:.4f}, "
+                          f"范围: [{feat_min:.4f}, {feat_max:.4f}]")
+                    print(f"专家使用率: {expert_usage.cpu().numpy()}")
+                
+                # 始终记录到wandb (如果可用)
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        # 记录路由特征统计
+                        wandb_data = {
+                            "moe/routing_mean": feat_mean,
+                            "moe/routing_std": feat_std,
+                            "moe/routing_max": feat_max,
+                            "moe/routing_min": feat_min,
+                        }
+                        
+                        # 添加专家使用情况
+                        for i, usage in enumerate(expert_usage):
+                            wandb_data[f"moe/expert_{i}_usage"] = usage.item()
+                        
+                        # 添加损失信息
+                        wandb_data.update({
+                            "moe/balance_loss": balance_loss.item(),
+                            "moe/importance_loss": importance_loss.item(),
+                            "moe/aux_loss": self.aux_loss.item(),
+                        })
+                        
+                        wandb.log(wandb_data)
+                except:
+                    pass
         
         return combined_output
 

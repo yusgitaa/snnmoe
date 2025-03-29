@@ -930,6 +930,10 @@ parser.add_argument(
     default=1.0,
     help='使用数据集的比例 (0.0-1.0)',
 )
+parser.add_argument('--moe-print-stats', action='store_true',
+                   help='打印MoE模块的统计信息')
+parser.add_argument('--moe-print-interval', type=int, default=100,
+                   help='MoE统计信息打印间隔(步数)')
 
 _logger = logging.getLogger("train")
 stream_handler = logging.StreamHandler()
