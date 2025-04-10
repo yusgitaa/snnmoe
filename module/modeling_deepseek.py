@@ -1550,147 +1550,181 @@ class DeepseekMoESparseMLP(nn.Module):
         # 输入维度检查
         assert len(hidden_states.shape) == 5, f"Expected 5D tensor [T,B,C,H,W], got shape {hidden_states.shape}"
         T, B, C, H, W = hidden_states.shape
-        
+
         # 特征提取用于路由
-        flat_states = hidden_states.reshape(T*B, C, H, W)
-        pooled_features = F.adaptive_avg_pool2d(flat_states, 1).squeeze(-1).squeeze(-1)
-        
+        flat_states = hidden_states.reshape(T * B, C, H, W)
+        pooled_features = F.adaptive_avg_pool2d(flat_states, 1).squeeze(-1).squeeze(-1) # [T*B, C]
+
         # 基本路由决策
-        base_router_logits = self.router(pooled_features)
-        
-        # 添加软提示影响
+        base_router_logits = self.router(pooled_features) # [T*B, n_routed_experts]
+
+        # 结合软提示影响 (仅在训练时且启用时)
         if self.use_soft_prompt and self.training:
             # 扩展软提示到批次大小
-            prompt = self.soft_prompt.expand(T*B, -1)
-            
+            prompt = self.soft_prompt.expand(T * B, -1) # [T*B, hidden_size]
             # 计算软提示的路由逻辑
-            prompt_logits = self.prompt_router_proj(prompt)
-            
+            prompt_logits = self.prompt_router_proj(prompt) # [T*B, n_routed_experts]
             # 使用可训练权重结合两种路由逻辑
-            prompt_weight = torch.sigmoid(self.prompt_weight)  # 确保权重在[0,1]之间
-            
+            prompt_weight = torch.sigmoid(self.prompt_weight)  # [1], 确保权重在[0,1]之间
             # 组合路由逻辑
             router_logits = (1 - prompt_weight) * base_router_logits + prompt_weight * prompt_logits
-            
-            # 如果需要可视化/调试
-            if hasattr(self, '_step_counter') and self._step_counter.item() % 100 == 0:
-                with torch.no_grad():
-                    base_dist = F.softmax(base_router_logits, dim=-1).mean(0)
-                    prompt_dist = F.softmax(prompt_logits, dim=-1).mean(0)
-                    combined_dist = F.softmax(router_logits, dim=-1).mean(0)
-                    """ print(f"\n软提示权重: {prompt_weight.item():.4f}")
-                    print(f"基本分布: {base_dist}")
-                    print(f"提示分布: {prompt_dist}")
-                    print(f"组合分布: {combined_dist}") """
         else:
+            # 非训练或未启用软提示时，只使用基本路由
             router_logits = base_router_logits
-            
-        # 添加噪声以增加探索
+
+        # 添加噪声以增加探索 (仅在训练时)
         if self.training:
             router_logits = router_logits + torch.randn_like(router_logits) * 0.2
-            
-        routing_weights = F.softmax(router_logits, dim=-1)
-        
+
+        # 计算最终路由权重
+        routing_weights = F.softmax(router_logits, dim=-1) # [T*B, n_routed_experts]
+
         # 选择top-k专家
-        top_k_weights, top_k_indices = torch.topk(routing_weights, k=self.top_k, dim=-1)
+        top_k_weights, top_k_indices = torch.topk(routing_weights, k=self.top_k, dim=-1) # [T*B, top_k]
+        # 重新归一化选中的专家权重
         top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)
-        
-        # 计算可路由专家输出
+
+        # 计算可路由专家输出 (所有专家并行计算)
+        # expert() 输入 [T, B, C, H, W], 输出 [T, B, C, H, W]
+        # routed_outputs 维度 [n_routed_experts, T, B, C, H, W]
         routed_outputs = torch.stack([expert(hidden_states) for expert in self.routed_experts])
-        
-        # 构建路由矩阵
-        batch_indices = torch.arange(T*B, device=hidden_states.device)
-        batch_indices = batch_indices.repeat(self.top_k, 1).t().reshape(-1)
-        expert_indices = top_k_indices.reshape(-1)
-        weights = top_k_weights.reshape(-1)
-        indices = torch.stack([batch_indices, expert_indices], dim=1)
-        
+
+        # 构建路由矩阵，用于加权组合专家输出
+        batch_indices = torch.arange(T * B, device=hidden_states.device)
+        batch_indices = batch_indices.repeat(self.top_k, 1).t().reshape(-1) # [T*B*top_k]
+        expert_indices = top_k_indices.reshape(-1) # [T*B*top_k]
+        weights = top_k_weights.reshape(-1) # [T*B*top_k]
+        indices = torch.stack([batch_indices, expert_indices], dim=1) # [T*B*top_k, 2]
+
+        # 创建稀疏路由矩阵并转为密集矩阵
         sparse_router = torch.sparse.FloatTensor(
             indices.t(),
             weights,
-            torch.Size([T*B, self.n_routed_experts])
-        ).to_dense()
-        
-        router_matrix = sparse_router.reshape(T, B, self.n_routed_experts)
-        
-        # 组合可路由专家输出
-        combined_output = torch.einsum('tbe,etbchw->tbchw', router_matrix, routed_outputs)
-        
-        # 添加共享专家输出
+            torch.Size([T * B, self.n_routed_experts])
+        ).to_dense() # [T*B, n_routed_experts]
+
+        # 重塑路由矩阵以匹配 einsum 维度
+        router_matrix = sparse_router.reshape(T, B, self.n_routed_experts) # [T, B, n_routed_experts]
+
+        # 使用 einsum 高效组合可路由专家输出
+        # 'tbe,etbchw->tbchw'
+        # T=time, B=batch, e=expert, c=channel, h=height, w=width
+        combined_output = torch.einsum('tbe,etbchw->tbchw', router_matrix, routed_outputs) # [T, B, C, H, W]
+
+        # 初始化 wandb 记录相关变量
+        wandb_data = None
+        should_log_wandb = False
+
+        # 训练时计算辅助损失和统计信息
+        if self.training:
+            # 计算专家使用统计
+            flat_indices = top_k_indices.reshape(-1) # [T*B*top_k]
+            expert_counts = torch.zeros(self.n_routed_experts, device=hidden_states.device)
+            expert_counts.scatter_add_(0, flat_indices, torch.ones_like(flat_indices, dtype=torch.float))
+            self._expert_counts = expert_counts
+
+            # 计算负载平衡损失
+            # 避免在 expert_counts 全为零时除零 (虽然不太可能在训练中发生)
+            total_selections = self._expert_counts.sum()
+            expert_usage = self._expert_counts / (total_selections + 1e-8)
+            ideal_usage = torch.ones_like(expert_usage) / self.n_routed_experts
+            balance_loss = F.mse_loss(expert_usage, ideal_usage) * self.n_routed_experts # 乘以专家数量以稳定损失尺度
+
+            # 计算重要性损失 (输入熵)
+            importance_loss = torch.mean(torch.sum(routing_weights * torch.log(routing_weights + 1e-10), dim=-1)) # 应该是负的熵
+
+            # 计算总辅助损失
+            self.aux_loss = (balance_loss - importance_loss) * self.aux_loss_alpha # 减去负熵等于加上熵
+
+            # --- wandb 日志记录准备 ---
+            if hasattr(self, '_step_counter'):
+                self._step_counter += 1
+                log_frequency = 100 # 定义记录频率
+                should_log_wandb = self._step_counter.item() % log_frequency == 0
+
+                if should_log_wandb:
+                    try:
+                        import wandb
+                        if wandb.run is not None:
+                            # 计算基础统计信息
+                            with torch.no_grad():
+                                feat_mean = pooled_features.mean().item()
+                                feat_std = pooled_features.std().item()
+                                feat_max = pooled_features.max().item()
+                                feat_min = pooled_features.min().item()
+
+                            # 填充基础 MoE 统计到 wandb_data
+                            wandb_data = {
+                                "moe/routing_mean": feat_mean,
+                                "moe/routing_std": feat_std,
+                                "moe/routing_max": feat_max,
+                                "moe/routing_min": feat_min,
+                            }
+                            # 添加专家使用情况
+                            for i, usage in enumerate(expert_usage):
+                                wandb_data[f"moe/expert_{i}_usage"] = usage.item()
+                            # 添加损失信息
+                            if self.aux_loss is not None:
+                                wandb_data.update({
+                                    "moe/balance_loss": balance_loss.item(),
+                                    "moe/importance_loss": -importance_loss.item(), # 记录正熵
+                                    "moe/aux_loss": self.aux_loss.item(),
+                                })
+                            # 添加软提示权重 (如果启用)
+                            if self.use_soft_prompt:
+                                wandb_data["moe/soft_prompt_weight"] = torch.sigmoid(self.prompt_weight).item()
+
+                        else: # wandb 未初始化
+                            should_log_wandb = False
+                    except ImportError: # wandb 未安装
+                        should_log_wandb = False
+                    except Exception as e: # 其他错误
+                        should_log_wandb = False
+                        # 可以考虑记录错误到文件或日志系统
+                        # print(f"Wandb check failed: {e}") # 不打印
+            # --- 结束 wandb 日志准备 ---
+
+        # 添加共享专家的输出
         if self.shared_experts is not None:
             shared_outputs = []
             for expert in self.shared_experts:
                 shared_outputs.append(expert(hidden_states))
-            shared_output = torch.stack(shared_outputs).mean(dim=0)
+            # 平均所有共享专家的输出
+            shared_output = torch.stack(shared_outputs).mean(dim=0) # [T, B, C, H, W]
+
+            # --- 计算并记录共享专家贡献 (如果需要记录 wandb) ---
+            if self.training and should_log_wandb and wandb_data is not None:
+                with torch.no_grad():
+                    shared_contribution = shared_output.abs().mean().item()
+                    # combined_output 此时还不包含 shared_output
+                    routed_contribution_before_shared = combined_output.abs().mean().item()
+                    shared_ratio = shared_contribution / (routed_contribution_before_shared + 1e-8)
+
+                # 更新 wandb_data 字典
+                shared_wandb_data = {
+                    "moe/shared_expert_contribution": shared_contribution,
+                    "moe/routed_expert_contribution": routed_contribution_before_shared,
+                    "moe/shared_vs_routed_ratio": shared_ratio,
+                }
+                wandb_data.update(shared_wandb_data)
+            # --- 结束共享专家贡献记录 ---
+
+            # 将共享专家输出加到最终结果
             combined_output = combined_output + shared_output
-        
-        # 训练时计算辅助损失
-        if self.training:
-            # 计算专家使用统计
-            flat_indices = top_k_indices.reshape(-1)
-            expert_counts = torch.zeros(self.n_routed_experts, device=hidden_states.device)
-            expert_counts.scatter_add_(0, flat_indices, torch.ones_like(flat_indices, dtype=torch.float))
-            self._expert_counts = expert_counts
-            
-            # 计算负载平衡损失
-            expert_usage = self._expert_counts / self._expert_counts.sum()
-            ideal_usage = torch.ones_like(expert_usage) / self.n_routed_experts
-            balance_loss = F.mse_loss(expert_usage, ideal_usage)
-            
-            # 计算重要性损失
-            importance_loss = -torch.mean(torch.sum(routing_weights * torch.log(routing_weights + 1e-10), dim=-1))
-            
-            self.aux_loss = (balance_loss + importance_loss) * self.aux_loss_alpha
-            
-            if DEBUG_MOE and hasattr(self, '_step_counter'):
-                self._step_counter += 1
-                if self._step_counter.item() % 100 == 0:
-                    print(f"\nMoE统计 [step {self._step_counter.item()}]")
-                    print(f"专家使用率: {expert_usage.cpu().numpy()}")
-        
-        # 记录路由专家的输出范围
-        routed_output_stats = {
-            'mean': combined_output.mean().item(),
-            'std': combined_output.std().item(),
-            'max': combined_output.max().item(),
-            'min': combined_output.min().item()
-        }
-        
-        # 添加共享专家的输出统计
-        if self.shared_experts is not None:
-            shared_outputs = []
-            for i, expert in enumerate(self.shared_experts):
-                expert_output = expert(hidden_states)
-                shared_outputs.append(expert_output)
-                
-                # 记录每个共享专家的输出统计
-                """ if self.training and self._step_counter.item() % 100 == 0:
-                    print(f"\n共享专家 {i} 输出统计:")
-                    print(f"Mean: {expert_output.mean().item():.4f}")
-                    print(f"Std: {expert_output.std().item():.4f}")
-                    print(f"Max: {expert_output.max().item():.4f}")
-                    print(f"Min: {expert_output.min().item():.4f}") """
-            
-            shared_output = torch.stack(shared_outputs).mean(dim=0)
-            
-            # 记录共享专家的贡献
-            shared_contribution = shared_output.abs().mean().item()
-            routed_contribution = combined_output.abs().mean().item()
-            
-            if self.training:
-                self._shared_expert_usage += 1
-                self._step_counter += 1
-                
-                """ if self._step_counter.item() % 100 == 0:
-                    print(f"\nStep {self._step_counter.item()} MoE统计:")
-                    print(f"路由专家输出统计: {routed_output_stats}")
-                    print(f"共享专家贡献: {shared_contribution:.4f}")
-                    print(f"路由专家贡献: {routed_contribution:.4f}")
-                    print(f"贡献比例 (共享/路由): {shared_contribution/routed_contribution:.4f}") """
-            
-            # 最终输出
-            combined_output = combined_output + shared_output
-        
+
+        # --- 执行最终的 wandb 日志记录 ---
+        if self.training and should_log_wandb and wandb_data is not None:
+            try:
+                # 确保 wandb 仍然可用
+                import wandb
+                if wandb.run is not None:
+                    wandb.log(wandb_data, step=int(self._step_counter.item()))
+            except Exception as e:
+                # 记录失败，静默处理
+                # print(f"Final Wandb logging failed: {e}") # 不打印
+                pass
+        # --- 结束 wandb 日志记录 ---
+
         return combined_output
 
     def get_aux_loss(self):
