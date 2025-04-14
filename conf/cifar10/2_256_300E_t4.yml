@@ -58,5 +58,5 @@ warmup_lr: 1e-6
 opt: adamw
 smoothing: 0.1
 workers: 8
-aux_loss_alpha: 0.3
+aux_loss_alpha: 0.1
 

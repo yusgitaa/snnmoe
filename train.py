@@ -1094,7 +1094,8 @@ def main():
         num_heads=args.num_heads,
         depths=args.layer,
         mlp_ratios=args.mlp_ratio,
-        sr_ratios=1,
+        dim=args.dim, # <---- 添加这一行，显式传递 dim
+        sr_ratios=1, # 确保这个参数存在或有默认值
         pooling_stat=args.pooling_stat,
         spike_mode=args.spike_mode,
         use_moe=args.use_moe,

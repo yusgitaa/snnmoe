@@ -250,6 +250,7 @@ def sdt(
     sr_ratios=1,
     pooling_stat="1111",
     spike_mode="lif",
+    dim=256,
     use_moe=False,
     use_moe_mlp=False,
     n_routed_experts=4,
@@ -260,13 +261,13 @@ def sdt(
     **kwargs,
 ):
     print(f"\nModel Debug - Init:")
+    print(f"Received dim: {dim}")
     print(f"use_moe (SPS): {use_moe}")
     print(f"use_moe_mlp (MLP): {use_moe_mlp}")
     
-    # 无论是否使用MoE，都使用相同的参数集
     model_kwargs = dict(
         patch_size=4,
-        embed_dims=256,
+        embed_dims=dim,
         num_heads=num_heads,
         mlp_ratios=mlp_ratios,
         qkv_bias=False,
