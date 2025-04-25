@@ -1,0 +1,1 @@
+python main.py --model C:/Users/YYK/Desktop/SpikeLLM-main/llama-2-7b --eval_ppl --epochs 20 --output_dir ./log/llama1-7b-w4a4-200 --wbits 4 --abits 4 --lwc --let --tasks piqa,arc_easy,arc_challenge,boolq,hellaswag,winogrande --let_lr 1e-3 --alpha 0.75 --seed 2 --addbit 1 --low_p 0.9

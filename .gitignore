@@ -1,0 +1,22 @@
+# 模型文件夹
+Mixtral-8x7B-Instruct-v0.1/
+llama-2-7b/
+
+# 缓存和数据文件
+cache/
+act_shifts/
+act_scales/
+
+# 其他通用文件
+*.pyc
+__pycache__/
+.DS_Store
+.env
+.venv
+*.log
+*.cache
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp

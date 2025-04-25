@@ -1,0 +1,106 @@
+[2025-04-24 20:28:53 root] (main.py 271): INFO Namespace(a_dynamic_method='per_token', abits=4, act_scales=None, act_shifts=None, addbit=1, alpha=0.75, attn_implementation='eager', aug_loss=False, batch_size=1, cache_dir='./cache', calib_dataset='wikitext2', deactive_amp=False, disable_zero_point=False, epochs=1, eval_ppl=True, group_size=None, let=True, let_lr=0.001, limit=-1, low_p=0.9, lwc=True, lwc_lr=0.01, model='C:/Users/YYK/Desktop/SpikeLLM-main/llama-2-7b', multigpu=False, net=None, nsamples=8, num_fewshot=0, output_dir='./log/llama1-7b-w4a4-200', real_quant=False, resume=None, save_dir=None, seed=2, symmetric=False, tasks='piqa,arc_easy,arc_challenge,boolq,hellaswag,winogrande', w_dynamic_method='per_channel', wbits=4, wd=0)
+[2025-04-24 20:28:54 root] (main.py 343): INFO === start quantization ===
+[2025-04-24 20:28:54 root] (main.py 349): INFO load calibration from ./cache/dataloader_llama_wikitext2_8.cache
+[2025-04-24 20:28:54 root] (spike_omniquant.py 114): INFO Starting ...
+[2025-04-24 20:28:54 root] (spike_omniquant.py 117): INFO Moving the entire model to GPU for initial processing...
+[2025-04-24 20:29:03 root] (spike_omniquant.py 178): INFO Before explicit move - Rotary emb device: cuda:0
+[2025-04-24 20:29:03 root] (spike_omniquant.py 181): INFO After explicit move - Rotary emb device: cuda:0
+[2025-04-24 20:29:04 root] (spike_omniquant.py 307): INFO === Start quantize layer 0 ===
+[2025-04-24 20:29:08 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 0 ---
+[2025-04-24 20:29:10 root] (spike_omniquant.py 452): INFO layer 0 iter 0 loss:8.172084926627576e-05 norm:7.860289770178497e-05 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:10 root] (spike_omniquant.py 307): INFO === Start quantize layer 1 ===
+[2025-04-24 20:29:11 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 1 ---
+[2025-04-24 20:29:16 root] (spike_omniquant.py 452): INFO layer 1 iter 0 loss:0.04233241453766823 norm:nan max memory_allocated 20834.693359375 
+[2025-04-24 20:29:16 root] (spike_omniquant.py 307): INFO === Start quantize layer 2 ===
+[2025-04-24 20:29:17 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 2 ---
+[2025-04-24 20:29:22 root] (spike_omniquant.py 452): INFO layer 2 iter 0 loss:0.04291863739490509 norm:0.0004194925131741911 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:22 root] (spike_omniquant.py 307): INFO === Start quantize layer 3 ===
+[2025-04-24 20:29:23 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 3 ---
+[2025-04-24 20:29:27 root] (spike_omniquant.py 452): INFO layer 3 iter 0 loss:0.045872557908296585 norm:0.0006353632779791951 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:28 root] (spike_omniquant.py 307): INFO === Start quantize layer 4 ===
+[2025-04-24 20:29:28 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 4 ---
+[2025-04-24 20:29:33 root] (spike_omniquant.py 452): INFO layer 4 iter 0 loss:0.04973514378070831 norm:0.00044113205512985587 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:33 root] (spike_omniquant.py 307): INFO === Start quantize layer 5 ===
+[2025-04-24 20:29:34 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 5 ---
+[2025-04-24 20:29:39 root] (spike_omniquant.py 452): INFO layer 5 iter 0 loss:0.05467340350151062 norm:0.000383260048693046 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:39 root] (spike_omniquant.py 307): INFO === Start quantize layer 6 ===
+[2025-04-24 20:29:40 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 6 ---
+[2025-04-24 20:29:44 root] (spike_omniquant.py 452): INFO layer 6 iter 0 loss:0.06251604855060577 norm:0.0012370378244668245 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:45 root] (spike_omniquant.py 307): INFO === Start quantize layer 7 ===
+[2025-04-24 20:29:45 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 7 ---
+[2025-04-24 20:29:50 root] (spike_omniquant.py 452): INFO layer 7 iter 0 loss:0.07251355051994324 norm:0.0009585241787135601 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:50 root] (spike_omniquant.py 307): INFO === Start quantize layer 8 ===
+[2025-04-24 20:29:51 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 8 ---
+[2025-04-24 20:29:56 root] (spike_omniquant.py 452): INFO layer 8 iter 0 loss:0.08437871932983398 norm:0.001864052377641201 max memory_allocated 20834.693359375 
+[2025-04-24 20:29:56 root] (spike_omniquant.py 307): INFO === Start quantize layer 9 ===
+[2025-04-24 20:29:57 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 9 ---
+[2025-04-24 20:30:02 root] (spike_omniquant.py 452): INFO layer 9 iter 0 loss:0.09661775827407837 norm:0.0009751638863235712 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:02 root] (spike_omniquant.py 307): INFO === Start quantize layer 10 ===
+[2025-04-24 20:30:03 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 10 ---
+[2025-04-24 20:30:07 root] (spike_omniquant.py 452): INFO layer 10 iter 0 loss:0.11227288097143173 norm:0.0016345351468771696 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:08 root] (spike_omniquant.py 307): INFO === Start quantize layer 11 ===
+[2025-04-24 20:30:08 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 11 ---
+[2025-04-24 20:30:13 root] (spike_omniquant.py 452): INFO layer 11 iter 0 loss:0.12879595160484314 norm:0.003997620195150375 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:13 root] (spike_omniquant.py 307): INFO === Start quantize layer 12 ===
+[2025-04-24 20:30:14 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 12 ---
+[2025-04-24 20:30:19 root] (spike_omniquant.py 452): INFO layer 12 iter 0 loss:0.14615404605865479 norm:0.002265617484226823 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:19 root] (spike_omniquant.py 307): INFO === Start quantize layer 13 ===
+[2025-04-24 20:30:20 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 13 ---
+[2025-04-24 20:30:24 root] (spike_omniquant.py 452): INFO layer 13 iter 0 loss:0.17309916019439697 norm:0.0013541177613660693 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:25 root] (spike_omniquant.py 307): INFO === Start quantize layer 14 ===
+[2025-04-24 20:30:25 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 14 ---
+[2025-04-24 20:30:30 root] (spike_omniquant.py 452): INFO layer 14 iter 0 loss:0.194200336933136 norm:0.0017440211959183216 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:30 root] (spike_omniquant.py 307): INFO === Start quantize layer 15 ===
+[2025-04-24 20:30:31 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 15 ---
+[2025-04-24 20:30:36 root] (spike_omniquant.py 452): INFO layer 15 iter 0 loss:0.2337447702884674 norm:0.0029407446272671223 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:36 root] (spike_omniquant.py 307): INFO === Start quantize layer 16 ===
+[2025-04-24 20:30:36 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 16 ---
+[2025-04-24 20:30:41 root] (spike_omniquant.py 452): INFO layer 16 iter 0 loss:0.30262789130210876 norm:0.002266521332785487 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:41 root] (spike_omniquant.py 307): INFO === Start quantize layer 17 ===
+[2025-04-24 20:30:42 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 17 ---
+[2025-04-24 20:30:47 root] (spike_omniquant.py 452): INFO layer 17 iter 0 loss:0.3552296459674835 norm:0.002451159292832017 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:47 root] (spike_omniquant.py 307): INFO === Start quantize layer 18 ===
+[2025-04-24 20:30:48 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 18 ---
+[2025-04-24 20:30:52 root] (spike_omniquant.py 452): INFO layer 18 iter 0 loss:0.4440333843231201 norm:0.0037551792338490486 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:53 root] (spike_omniquant.py 307): INFO === Start quantize layer 19 ===
+[2025-04-24 20:30:53 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 19 ---
+[2025-04-24 20:30:58 root] (spike_omniquant.py 452): INFO layer 19 iter 0 loss:0.54420405626297 norm:0.0022248844616115093 max memory_allocated 20834.693359375 
+[2025-04-24 20:30:58 root] (spike_omniquant.py 307): INFO === Start quantize layer 20 ===
+[2025-04-24 20:30:59 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 20 ---
+[2025-04-24 20:31:04 root] (spike_omniquant.py 452): INFO layer 20 iter 0 loss:0.6951978206634521 norm:0.0038164665456861258 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:04 root] (spike_omniquant.py 307): INFO === Start quantize layer 21 ===
+[2025-04-24 20:31:05 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 21 ---
+[2025-04-24 20:31:09 root] (spike_omniquant.py 452): INFO layer 21 iter 0 loss:0.8317553997039795 norm:0.001910426770336926 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:10 root] (spike_omniquant.py 307): INFO === Start quantize layer 22 ===
+[2025-04-24 20:31:10 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 22 ---
+[2025-04-24 20:31:15 root] (spike_omniquant.py 452): INFO layer 22 iter 0 loss:1.0295809507369995 norm:0.0039979638531804085 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:15 root] (spike_omniquant.py 307): INFO === Start quantize layer 23 ===
+[2025-04-24 20:31:16 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 23 ---
+[2025-04-24 20:31:21 root] (spike_omniquant.py 452): INFO layer 23 iter 0 loss:1.198222041130066 norm:0.0020667279604822397 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:21 root] (spike_omniquant.py 307): INFO === Start quantize layer 24 ===
+[2025-04-24 20:31:22 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 24 ---
+[2025-04-24 20:31:26 root] (spike_omniquant.py 452): INFO layer 24 iter 0 loss:1.4133415222167969 norm:0.005849091801792383 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:27 root] (spike_omniquant.py 307): INFO === Start quantize layer 25 ===
+[2025-04-24 20:31:27 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 25 ---
+[2025-04-24 20:31:32 root] (spike_omniquant.py 452): INFO layer 25 iter 0 loss:1.5895148515701294 norm:0.004138723015785217 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:32 root] (spike_omniquant.py 307): INFO === Start quantize layer 26 ===
+[2025-04-24 20:31:33 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 26 ---
+[2025-04-24 20:31:38 root] (spike_omniquant.py 452): INFO layer 26 iter 0 loss:1.8610244989395142 norm:0.0049097565934062 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:38 root] (spike_omniquant.py 307): INFO === Start quantize layer 27 ===
+[2025-04-24 20:31:38 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 27 ---
+[2025-04-24 20:31:43 root] (spike_omniquant.py 452): INFO layer 27 iter 0 loss:2.109194278717041 norm:0.002818917855620384 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:44 root] (spike_omniquant.py 307): INFO === Start quantize layer 28 ===
+[2025-04-24 20:31:44 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 28 ---
+[2025-04-24 20:31:49 root] (spike_omniquant.py 452): INFO layer 28 iter 0 loss:2.4398210048675537 norm:0.004917690064758062 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:49 root] (spike_omniquant.py 307): INFO === Start quantize layer 29 ===
+[2025-04-24 20:31:50 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 29 ---
+[2025-04-24 20:31:55 root] (spike_omniquant.py 452): INFO layer 29 iter 0 loss:2.839869260787964 norm:0.007354829926043749 max memory_allocated 20834.693359375 
+[2025-04-24 20:31:55 root] (spike_omniquant.py 307): INFO === Start quantize layer 30 ===
+[2025-04-24 20:31:56 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 30 ---
+[2025-04-24 20:32:00 root] (spike_omniquant.py 452): INFO layer 30 iter 0 loss:4.522049427032471 norm:nan max memory_allocated 20834.693359375 
+[2025-04-24 20:32:01 root] (spike_omniquant.py 307): INFO === Start quantize layer 31 ===
+[2025-04-24 20:32:01 root] (spike_omniquant.py 387): INFO --- Finished static calibration for layer 31 ---
+[2025-04-24 20:32:06 root] (spike_omniquant.py 452): INFO layer 31 iter 0 loss:15.492868423461914 norm:nan max memory_allocated 20834.693359375 
+[2025-04-24 20:32:06 root] (main.py 372): INFO 192.4931230545044
+[2025-04-24 20:32:09 root] (main.py 107): INFO load calibration from ./cache/testloader_llama_wikitext2_all.cache
+[2025-04-24 20:33:38 root] (main.py 151): INFO wikitext2 : 60.54280471801758
